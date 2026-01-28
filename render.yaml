@@ -5,54 +5,40 @@ databases:
   - name: rlm-postgres
     databaseName: rlm_engine
     user: rlm_user
-    plan: free  # or starter for production
+    plan: free
 
 services:
   # Backend API
   - type: web
     name: rlm-backend
     runtime: python
-    plan: free  # or starter for production
-    buildCommand: |
-      cd backend && pip install -r requirements.txt
-    startCommand: |
-      cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: DATABASE_URL
         fromDatabase:
           name: rlm-postgres
           property: connectionString
-      - key: DATABASE_URL_SYNC
-        fromDatabase:
-          name: rlm-postgres
-          property: connectionString
       - key: OPENAI_API_KEY
-        sync: false  # Set manually in Render dashboard
+        sync: false
       - key: ANTHROPIC_API_KEY
-        sync: false  # Set manually in Render dashboard
+        sync: false
       - key: DEFAULT_MODEL
         value: gpt-4-turbo-preview
       - key: DEBUG
         value: "false"
-      - key: PYTHONPATH
-        value: /opt/render/project/src/backend
     healthCheckPath: /api/health
 
-  # Frontend (Static Site)
+  # Frontend (as Web Service with Node)
   - type: web
     name: rlm-frontend
-    runtime: static
-    buildCommand: |
-      cd frontend && npm install && npm run build
-    staticPublishPath: frontend/dist
-    headers:
-      - path: /*
-        name: Cache-Control
-        value: no-cache
-    routes:
-      - type: rewrite
-        source: /api/*
-        destination: https://rlm-backend.onrender.com/api/*
-      - type: rewrite
-        source: /*
-        destination: /index.html
+    runtime: node
+    plan: free
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    startCommand: npx serve -s dist -l $PORT
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false
