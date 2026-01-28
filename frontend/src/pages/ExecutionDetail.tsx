@@ -11,7 +11,7 @@ import type { ExecutionNode } from '../api/client'
 import ExecutionTree from '../components/ExecutionTree'
 import CodeBlock from '../components/CodeBlock'
 import MemoryDiff from '../components/MemoryDiff'
-import { formatDistanceToNow, format } from 'date-fns'
+import { format } from 'date-fns'
 
 export default function ExecutionDetail() {
   const { executionId } = useParams<{ executionId: string }>()
@@ -31,12 +31,14 @@ export default function ExecutionDetail() {
     return <div className="text-center py-8">Execution not found</div>
   }
 
-  const statusIcon = {
+  const statusIcons: Record<string, JSX.Element> = {
     completed: <CheckCircleIcon className="w-6 h-6 text-green-500" />,
     failed: <XCircleIcon className="w-6 h-6 text-red-500" />,
     running: <ClockIcon className="w-6 h-6 text-yellow-500 animate-spin" />,
     pending: <ClockIcon className="w-6 h-6 text-gray-400" />,
-  }[execution.status] || <ClockIcon className="w-6 h-6 text-gray-400" />
+    cancelled: <XCircleIcon className="w-6 h-6 text-gray-400" />,
+  }
+  const statusIcon = statusIcons[execution.status] || <ClockIcon className="w-6 h-6 text-gray-400" />
 
   return (
     <div className="space-y-6">
