@@ -1,8 +1,6 @@
 """Database connection and session management."""
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
 
 from app.config import settings
 from app.models.base import Base
@@ -14,23 +12,10 @@ async_engine = create_async_engine(
     pool_pre_ping=True,
 )
 
-# Sync engine for migrations and scripts
-sync_engine = create_engine(
-    settings.database_url_sync,
-    echo=settings.debug,
-    pool_pre_ping=True,
-)
-
 # Session factories
 AsyncSessionLocal = async_sessionmaker(
     async_engine,
     class_=AsyncSession,
-    expire_on_commit=False,
-)
-
-SyncSessionLocal = sessionmaker(
-    sync_engine,
-    class_=Session,
     expire_on_commit=False,
 )
 
