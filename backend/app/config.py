@@ -1,13 +1,12 @@
 """Configuration settings for RLM Engine."""
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
 from typing import Optional
 import os
 
 
-def get_database_url(async_driver: bool = True) -> str:
-    """Get database URL, converting Render's format if needed."""
-    url = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/rlm_engine")
-    
+def convert_database_url(url: str, async_driver: bool = True) -> str:
+    """Convert database URL to proper format for SQLAlchemy."""
     # Render provides postgres:// but SQLAlchemy needs postgresql://
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)
@@ -22,9 +21,16 @@ def get_database_url(async_driver: bool = True) -> str:
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
-    # Database - computed from DATABASE_URL env var
-    database_url: str = get_database_url(async_driver=True)
-    database_url_sync: str = get_database_url(async_driver=False)
+    # Database - will be validated to add asyncpg driver
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/rlm_engine"
+    
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def convert_db_url(cls, v: str) -> str:
+        """Convert DATABASE_URL to async format."""
+        if v:
+            return convert_database_url(v, async_driver=True)
+        return "postgresql+asyncpg://postgres:postgres@localhost:5432/rlm_engine"
     
     # LLM Settings
     openai_api_key: Optional[str] = None
