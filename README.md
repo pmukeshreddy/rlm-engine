@@ -300,55 +300,6 @@ RLM Runtime for Letta/
 └── README.md
 ```
 
-## Deploy to Render
-
-### Option 1: One-Click Deploy (Blueprint)
-
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)
-
-Click the button above, or:
-1. Fork this repo to your GitHub
-2. Go to [Render Dashboard](https://dashboard.render.com/)
-3. Click "New" → "Blueprint"
-4. Connect your forked repo
-5. Render will auto-detect `render.yaml` and create all services
-
-### Option 2: Manual Deploy
-
-#### 1. Create PostgreSQL Database
-- Go to Render Dashboard → New → PostgreSQL
-- Name: `rlm-postgres`
-- Copy the **Internal Database URL**
-
-#### 2. Deploy Backend
-- New → Web Service
-- Connect your repo
-- **Root Directory**: `backend`
-- **Runtime**: Python
-- **Build Command**: `pip install -r requirements.txt`
-- **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-- **Environment Variables**:
-  - `DATABASE_URL` = (paste Internal Database URL)
-  - `OPENAI_API_KEY` = (your key)
-  - `DEFAULT_MODEL` = `gpt-4-turbo-preview`
-
-#### 3. Deploy Frontend
-- New → Static Site
-- Connect your repo
-- **Root Directory**: `frontend`
-- **Build Command**: `npm install && npm run build`
-- **Publish Directory**: `dist`
-- **Environment Variables**:
-  - `VITE_API_BASE_URL` = `https://YOUR-BACKEND.onrender.com/api`
-- Add **Rewrite Rule**: `/*` → `/index.html`
-
-### Environment Variables (Required)
-
-| Variable | Where | Description |
-|----------|-------|-------------|
-| `DATABASE_URL` | Backend | PostgreSQL connection string |
-| `OPENAI_API_KEY` | Backend | Your OpenAI API key |
-| `VITE_API_BASE_URL` | Frontend | Full URL to backend API |
 
 ## License
 
