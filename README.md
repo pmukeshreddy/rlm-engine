@@ -171,6 +171,3 @@ The orchestration happens at inference time, no training required. Swap foundati
 
 Similar philosophy to test-time compute scaling and iterative refinement approaches. The LLM writes its own processing logic rather than following a fixed pipeline.
 
-## License
-
-MIT
