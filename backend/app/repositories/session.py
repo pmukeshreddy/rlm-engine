@@ -83,6 +83,7 @@ class SessionRepository:
         """List all sessions."""
         result = await self.session.execute(
             select(Session)
+            .options(selectinload(Session.memories))
             .order_by(desc(Session.updated_at))
             .limit(limit)
             .offset(offset)
