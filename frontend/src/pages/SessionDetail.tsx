@@ -1,10 +1,16 @@
+import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getSession, getSessionMemory, getExecutions } from '../api/client'
 import { formatDistanceToNow } from 'date-fns'
+import api from '../api/client'
 
 export default function SessionDetail() {
   const { sessionId } = useParams<{ sessionId: string }>()
+  const queryClient = useQueryClient()
+  const [newKey, setNewKey] = useState('')
+  const [newValue, setNewValue] = useState('')
+  const [showAddMemory, setShowAddMemory] = useState(false)
 
   const { data: session, isLoading: sessionLoading } = useQuery({
     queryKey: ['session', sessionId],
@@ -22,6 +28,35 @@ export default function SessionDetail() {
     queryKey: ['executions', sessionId],
     queryFn: () => getExecutions(sessionId),
     enabled: !!sessionId,
+  })
+
+  const addMemoryMutation = useMutation({
+    mutationFn: async ({ key, value }: { key: string; value: string }) => {
+      let parsedValue: unknown = value
+      try {
+        parsedValue = JSON.parse(value)
+      } catch {
+        // Keep as string if not valid JSON
+      }
+      await api.post(`/sessions/${sessionId}/memory`, { key, value: parsedValue })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sessionMemory', sessionId] })
+      queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
+      setNewKey('')
+      setNewValue('')
+      setShowAddMemory(false)
+    },
+  })
+
+  const deleteMemoryMutation = useMutation({
+    mutationFn: async (key: string) => {
+      await api.delete(`/sessions/${sessionId}/memory/${key}`)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sessionMemory', sessionId] })
+      queryClient.invalidateQueries({ queryKey: ['session', sessionId] })
+    },
   })
 
   if (sessionLoading) {
@@ -75,15 +110,70 @@ export default function SessionDetail() {
 
         {/* Memory */}
         <div className="bg-white rounded-lg border p-6">
-          <h2 className="font-semibold mb-4">Memory ({session.memory_count} keys)</h2>
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="font-semibold">Memory ({Object.keys(memory || {}).length} keys)</h2>
+            <button
+              onClick={() => setShowAddMemory(!showAddMemory)}
+              className="text-sm px-3 py-1 bg-primary-600 text-white rounded hover:bg-primary-700"
+            >
+              + Add
+            </button>
+          </div>
+          
+          {showAddMemory && (
+            <div className="mb-4 p-3 bg-gray-50 rounded space-y-2">
+              <input
+                type="text"
+                placeholder="Key"
+                value={newKey}
+                onChange={(e) => setNewKey(e.target.value)}
+                className="w-full px-2 py-1 border rounded text-sm"
+              />
+              <input
+                type="text"
+                placeholder="Value (string or JSON)"
+                value={newValue}
+                onChange={(e) => setNewValue(e.target.value)}
+                className="w-full px-2 py-1 border rounded text-sm"
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={() => addMemoryMutation.mutate({ key: newKey, value: newValue })}
+                  disabled={!newKey || addMemoryMutation.isPending}
+                  className="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700 disabled:opacity-50"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => setShowAddMemory(false)}
+                  className="px-3 py-1 border rounded text-sm hover:bg-gray-100"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+          
           {memory && Object.keys(memory).length > 0 ? (
             <div className="space-y-2 max-h-64 overflow-auto">
               {Object.entries(memory).map(([key, value]) => (
-                <div key={key} className="p-2 bg-gray-50 rounded">
-                  <p className="font-medium text-sm">{key}</p>
-                  <p className="text-xs text-gray-600 font-mono truncate">
-                    {JSON.stringify(value)}
-                  </p>
+                <div key={key} className="p-2 bg-gray-50 rounded flex justify-between items-start group">
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-sm">{key}</p>
+                    <p className="text-xs text-gray-600 font-mono truncate">
+                      {JSON.stringify(value)}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (confirm(`Delete memory key "${key}"?`)) {
+                        deleteMemoryMutation.mutate(key)
+                      }
+                    }}
+                    className="ml-2 text-red-500 opacity-0 group-hover:opacity-100 text-xs"
+                  >
+                    ×
+                  </button>
                 </div>
               ))}
             </div>
