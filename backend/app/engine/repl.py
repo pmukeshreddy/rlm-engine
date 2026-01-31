@@ -16,6 +16,7 @@ class ExecutionResult:
     output_log: List[str] = field(default_factory=list)
     child_calls: List[Dict[str, Any]] = field(default_factory=list)
     execution_time_ms: float = 0
+    memory_changes: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -59,12 +60,13 @@ class REPLExecutor:
         
         Args:
             context: The full context string
-            memory: Dictionary of persistent memory (read-only in code)
+            memory: Dictionary of persistent memory
             llm_query_fn: Async function to call child agents
             on_child_call: Callback when a child call completes
         """
         self.context = context
-        self.memory = memory.copy()  # Make a copy to prevent modification
+        self.memory = memory.copy()  # Working copy of memory
+        self._initial_memory = memory.copy()  # Original state for diff
         self._llm_query_fn = llm_query_fn
         self._on_child_call = on_child_call
         
@@ -72,6 +74,7 @@ class REPLExecutor:
         self._child_calls: List[ChildCall] = []
         self._output_log: List[str] = []
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._memory_changes: Dict[str, Any] = {}  # Track what changed
     
     def _create_final_fn(self):
         """Create the FINAL function for the REPL environment."""
@@ -80,6 +83,41 @@ class REPLExecutor:
             result_str = str(result) if not isinstance(result, str) else result
             raise FinalResultException(result_str)
         return final
+    
+    def _create_set_memory_fn(self):
+        """Create the set_memory function for persisting data."""
+        def set_memory(key: str, value: Any) -> None:
+            """
+            Store a value in persistent memory.
+            
+            Args:
+                key: The key to store under
+                value: The value to store (must be JSON-serializable)
+            """
+            self.memory[key] = value
+            self._memory_changes[key] = value
+            self._output_log.append(f"[set_memory] {key} = {str(value)[:100]}")
+        return set_memory
+    
+    def _create_get_memory_fn(self):
+        """Create the get_memory function for reading data."""
+        def get_memory(key: str, default: Any = None) -> Any:
+            """
+            Get a value from persistent memory.
+            
+            Args:
+                key: The key to retrieve
+                default: Default value if key doesn't exist
+            
+            Returns:
+                The stored value or default
+            """
+            return self.memory.get(key, default)
+        return get_memory
+    
+    def get_memory_changes(self) -> Dict[str, Any]:
+        """Get all memory changes made during execution."""
+        return self._memory_changes.copy()
     
     def _create_llm_query_fn(self):
         """Create the llm_query function for the REPL environment."""
@@ -196,6 +234,8 @@ class REPLExecutor:
                 'memory': self.memory,
                 'llm_query': self._create_llm_query_fn(),
                 'FINAL': self._create_final_fn(),
+                'set_memory': self._create_set_memory_fn(),
+                'get_memory': self._create_get_memory_fn(),
                 'print': self._create_print_fn(),
                 'len': len,
                 'str': str,
@@ -245,6 +285,7 @@ class REPLExecutor:
                 output_log=self._output_log,
                 child_calls=[vars(c) for c in self._child_calls],
                 execution_time_ms=(end_time - start_time).total_seconds() * 1000,
+                memory_changes=self._memory_changes,
             )
             
         except FinalResultException as e:
@@ -256,6 +297,7 @@ class REPLExecutor:
                 output_log=self._output_log,
                 child_calls=[vars(c) for c in self._child_calls],
                 execution_time_ms=(end_time - start_time).total_seconds() * 1000,
+                memory_changes=self._memory_changes,
             )
             
         except asyncio.TimeoutError:
@@ -266,6 +308,7 @@ class REPLExecutor:
                 output_log=self._output_log,
                 child_calls=[vars(c) for c in self._child_calls],
                 execution_time_ms=(end_time - start_time).total_seconds() * 1000,
+                memory_changes=self._memory_changes,
             )
             
         except Exception as e:
@@ -276,6 +319,7 @@ class REPLExecutor:
                 output_log=self._output_log,
                 child_calls=[vars(c) for c in self._child_calls],
                 execution_time_ms=(end_time - start_time).total_seconds() * 1000,
+                memory_changes=self._memory_changes,
             )
 
 
