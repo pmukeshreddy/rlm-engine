@@ -11,7 +11,7 @@ export default function Sessions() {
   const [newName, setNewName] = useState('')
   const [newContext, setNewContext] = useState('')
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ['sessions'],
     queryFn: getSessions,
   })
@@ -24,12 +24,20 @@ export default function Sessions() {
       setNewName('')
       setNewContext('')
     },
+    onError: (error: Error) => {
+      console.error('Failed to create session:', error)
+      alert(`Failed to create session: ${error.message}`)
+    },
   })
 
   const deleteMutation = useMutation({
     mutationFn: deleteSession,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sessions'] })
+    },
+    onError: (error: Error) => {
+      console.error('Failed to delete session:', error)
+      alert(`Failed to delete session: ${error.message}`)
     },
   })
 
@@ -106,6 +114,11 @@ export default function Sessions() {
               Cancel
             </button>
           </div>
+          {createMutation.isError && (
+            <div className="text-red-500 text-sm">
+              Error: {(createMutation.error as Error).message}
+            </div>
+          )}
         </div>
       )}
 
@@ -113,6 +126,14 @@ export default function Sessions() {
       <div className="bg-white rounded-lg border">
         {isLoading ? (
           <div className="p-8 text-center text-gray-500">Loading...</div>
+        ) : error ? (
+          <div className="p-8 text-center text-red-500">
+            <p className="font-medium">Failed to load sessions</p>
+            <p className="text-sm mt-1">{(error as Error).message}</p>
+            <p className="text-xs text-gray-400 mt-2">
+              Make sure VITE_API_BASE_URL is configured in Render dashboard
+            </p>
+          </div>
         ) : !data?.sessions.length ? (
           <div className="p-8 text-center text-gray-500">
             No sessions yet. Create one to get started.
