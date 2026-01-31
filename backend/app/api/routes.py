@@ -272,6 +272,16 @@ async def create_execution(
     if request.session_id:
         execution.session_id = request.session_id
         await db.flush()
+        
+        # Save memory changes back to session
+        if trace.execution_result and trace.execution_result.memory_changes:
+            for key, value in trace.execution_result.memory_changes.items():
+                await session_repo.set_memory(
+                    session_id=request.session_id,
+                    key=key,
+                    value=value,
+                    source_execution_id=execution.id,
+                )
     
     return ExecutionResponse(
         id=execution.id,
