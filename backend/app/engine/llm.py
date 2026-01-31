@@ -210,7 +210,9 @@ You have access to these variables and functions in your REPL environment:
 - `context[start:end]`: Slice the context to get a portion
 - `llm_query(prompt: str) -> str`: Spawn a child agent to answer a question. The prompt can include data from context.
 - `FINAL(result: str)`: Call this with your final answer when done. YOU MUST call this to complete.
-- `memory`: A dict of persistent memory from previous runs (read-only in code, updated automatically)
+- `memory`: A dict of persistent memory from previous runs (read-only direct access)
+- `get_memory(key: str, default=None) -> Any`: Get a value from persistent memory
+- `set_memory(key: str, value: Any)`: Store a value in persistent memory for future runs
 
 IMPORTANT RULES:
 1. NEVER try to include the full context in a prompt - it's too large!
@@ -220,6 +222,7 @@ IMPORTANT RULES:
 5. Always call FINAL(result) at the end with your answer
 6. Keep your code simple and readable
 7. Handle errors gracefully
+8. Use set_memory() to persist useful information for future queries
 
 Example for processing large context:
 ```python
@@ -234,6 +237,11 @@ for i, chunk in enumerate(chunks):
 
 # Aggregate results
 summary = llm_query(f"Combine these extracted facts into a coherent summary:\\n" + "\\n---\\n".join(results))
+
+# Store useful info for future queries
+set_memory("last_summary", summary)
+set_memory("num_chunks", len(chunks))
+
 FINAL(summary)
 ```
 
