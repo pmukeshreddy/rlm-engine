@@ -175,6 +175,9 @@ async def run_benchmark(
             "context_chars": len(sample.context),
         }
 
+        # Debug: show reference answers
+        print(f"    [REF] {sample.reference_answers}")
+
         # --- RLM Engine ---
         print_progress(i, len(samples), sample.id, "RLM Engine")
         try:
@@ -190,8 +193,14 @@ async def run_benchmark(
             if trace.execution_result and trace.execution_result.success:
                 rlm_answer = trace.execution_result.final_result or ""
 
+            # Debug: show RLM answer vs reference
+            rlm_words = len(rlm_answer.split()) if rlm_answer else 0
+            ref_words = len(sample.reference_answers[0].split()) if sample.reference_answers else 0
+            print(f"    [RLM ANS] ({rlm_words} words vs ref {ref_words} words): {rlm_answer[:200]}{'...' if len(rlm_answer) > 200 else ''}")
+
             # Score against references (includes F1, ROUGE, BERTScore, length_ratio)
             rlm_scores = score_prediction(rlm_answer, sample.reference_answers)
+            print(f"    [RLM SCORES] f1={rlm_scores['f1']:.4f} bertscore={rlm_scores['bertscore']:.4f} len_ratio={rlm_scores['length_ratio']:.1f}")
 
             # Compression (char + token based)
             comp_result = None
@@ -230,6 +239,11 @@ async def run_benchmark(
             )
 
             direct_scores = score_prediction(baseline_result.answer, sample.reference_answers)
+
+            # Debug: show Direct answer
+            direct_words = len(baseline_result.answer.split()) if baseline_result.answer else 0
+            print(f"    [DIRECT ANS] ({direct_words} words, truncated={baseline_result.truncated}): {baseline_result.answer[:200]}{'...' if len(baseline_result.answer) > 200 else ''}")
+            print(f"    [DIRECT SCORES] f1={direct_scores['f1']:.4f} bertscore={direct_scores['bertscore']:.4f} len_ratio={direct_scores['length_ratio']:.1f}")
 
             result["direct"] = {
                 "answer": baseline_result.answer,
