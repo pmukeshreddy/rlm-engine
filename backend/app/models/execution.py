@@ -57,7 +57,6 @@ class Execution(Base):
 
     # Metrics
     metrics = Column(JSON, nullable=True)  # Stores ExecutionMetrics.to_dict()
-    faithfulness_score = Column(Float, nullable=True)  # Denormalized for querying
     compression_ratio = Column(Float, nullable=True)
     memory_speedup_pct = Column(Float, nullable=True)  # Cost reduction %
 
@@ -81,7 +80,6 @@ class Execution(Base):
             "final_result": self.final_result,
             "error_message": self.error_message,
             "metrics": self.metrics,
-            "faithfulness_score": self.faithfulness_score,
             "compression_ratio": self.compression_ratio,
             "memory_speedup_pct": self.memory_speedup_pct,
         }

@@ -63,7 +63,6 @@ class ExecutionResponse(BaseModel):
     total_cost_usd: float
     final_result: Optional[str]
     error_message: Optional[str]
-    faithfulness_score: Optional[float] = None
     compression_ratio: Optional[float] = None
     memory_speedup_pct: Optional[float] = None
 
@@ -139,7 +138,6 @@ class MemoryDictResponse(BaseModel):
 class MetricsResponse(BaseModel):
     """Full metrics for an execution."""
     execution_id: str
-    faithfulness: Optional[Dict[str, Any]] = None
     compression: Optional[Dict[str, Any]] = None
     memory_speedup: Optional[Dict[str, Any]] = None
 
@@ -147,10 +145,8 @@ class MetricsResponse(BaseModel):
 class MetricsSummary(BaseModel):
     """Aggregated metrics across executions."""
     total_evaluated: int
-    avg_faithfulness_score: Optional[float]
     avg_compression_ratio: Optional[float]
     avg_memory_speedup_pct: Optional[float]
-    faithfulness_distribution: Dict[str, int]  # {"faithful": N, "partially_faithful": N, ...}
     executions_with_memory_benefit: int  # Count where speedup > 0
 
 

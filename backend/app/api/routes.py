@@ -317,7 +317,6 @@ async def create_execution(
         await execution_repo.save_execution_metrics(
             execution_id=execution.id,
             metrics=metrics.to_dict(),
-            faithfulness_score=metrics.faithfulness.score if metrics.faithfulness else None,
             compression_ratio=metrics.compression.compression_ratio if metrics.compression else None,
             memory_speedup_pct=metrics.memory_speedup.cost_reduction_pct if metrics.memory_speedup and metrics.memory_speedup.has_baseline else None,
         )
@@ -335,7 +334,6 @@ async def create_execution(
         total_cost_usd=execution.total_cost_usd,
         final_result=execution.final_result,
         error_message=execution.error_message,
-        faithfulness_score=execution.faithfulness_score,
         compression_ratio=execution.compression_ratio,
         memory_speedup_pct=execution.memory_speedup_pct,
     )
@@ -459,7 +457,6 @@ async def list_executions(
                 total_cost_usd=e.total_cost_usd,
                 final_result=e.final_result,
                 error_message=e.error_message,
-                faithfulness_score=e.faithfulness_score,
                 compression_ratio=e.compression_ratio,
                 memory_speedup_pct=e.memory_speedup_pct,
             )
@@ -500,7 +497,6 @@ async def get_execution(
         total_cost_usd=execution.total_cost_usd,
         final_result=execution.final_result,
         error_message=execution.error_message,
-        faithfulness_score=execution.faithfulness_score,
         compression_ratio=execution.compression_ratio,
         memory_speedup_pct=execution.memory_speedup_pct,
         tree=tree_data,
@@ -541,7 +537,6 @@ async def get_execution_metrics(
 
     return MetricsResponse(
         execution_id=execution.id,
-        faithfulness=execution.metrics.get("faithfulness") if execution.metrics else None,
         compression=execution.metrics.get("compression") if execution.metrics else None,
         memory_speedup=execution.metrics.get("memory_speedup") if execution.metrics else None,
     )
@@ -650,14 +645,12 @@ async def recompute_metrics(
     await repo.save_execution_metrics(
         execution_id=execution.id,
         metrics=metrics.to_dict(),
-        faithfulness_score=metrics.faithfulness.score if metrics.faithfulness else None,
         compression_ratio=metrics.compression.compression_ratio if metrics.compression else None,
         memory_speedup_pct=metrics.memory_speedup.cost_reduction_pct if metrics.memory_speedup and metrics.memory_speedup.has_baseline else None,
     )
 
     return MetricsResponse(
         execution_id=execution.id,
-        faithfulness=metrics.faithfulness.to_dict() if metrics.faithfulness else None,
         compression=metrics.compression.to_dict() if metrics.compression else None,
         memory_speedup=metrics.memory_speedup.to_dict() if metrics.memory_speedup else None,
     )

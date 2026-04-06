@@ -232,7 +232,6 @@ class ExecutionRepository:
         self,
         execution_id: str,
         metrics: Dict[str, Any],
-        faithfulness_score: Optional[float] = None,
         compression_ratio: Optional[float] = None,
         memory_speedup_pct: Optional[float] = None,
     ) -> Optional[Execution]:
@@ -244,8 +243,6 @@ class ExecutionRepository:
 
         if execution:
             execution.metrics = metrics
-            if faithfulness_score is not None:
-                execution.faithfulness_score = faithfulness_score
             if compression_ratio is not None:
                 execution.compression_ratio = compression_ratio
             if memory_speedup_pct is not None:
@@ -269,31 +266,18 @@ class ExecutionRepository:
         if not executions:
             return {
                 "total_evaluated": 0,
-                "avg_faithfulness_score": None,
                 "avg_compression_ratio": None,
                 "avg_memory_speedup_pct": None,
-                "faithfulness_distribution": {},
                 "executions_with_memory_benefit": 0,
             }
 
-        faith_scores = [e.faithfulness_score for e in executions if e.faithfulness_score is not None]
         comp_ratios = [e.compression_ratio for e in executions if e.compression_ratio is not None]
         speedups = [e.memory_speedup_pct for e in executions if e.memory_speedup_pct is not None]
 
-        # Build faithfulness distribution
-        faith_dist = {"faithful": 0, "partially_faithful": 0, "unfaithful": 0}
-        for e in executions:
-            if e.metrics and e.metrics.get("faithfulness"):
-                verdict = e.metrics["faithfulness"].get("verdict", "")
-                if verdict in faith_dist:
-                    faith_dist[verdict] += 1
-
         return {
             "total_evaluated": len(executions),
-            "avg_faithfulness_score": round(sum(faith_scores) / len(faith_scores), 3) if faith_scores else None,
             "avg_compression_ratio": round(sum(comp_ratios) / len(comp_ratios), 2) if comp_ratios else None,
             "avg_memory_speedup_pct": round(sum(speedups) / len(speedups), 1) if speedups else None,
-            "faithfulness_distribution": faith_dist,
             "executions_with_memory_benefit": sum(1 for s in speedups if s > 0),
         }
 

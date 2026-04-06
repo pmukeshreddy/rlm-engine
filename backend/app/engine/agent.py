@@ -182,7 +182,7 @@ class LettaAgent:
             baseline_execution: First execution on same context (for memory speedup)
 
         Returns:
-            ExecutionMetrics with faithfulness, compression, and memory speedup
+            ExecutionMetrics with compression and memory speedup
         """
         evaluator = MetricsEvaluator(llm_client=self.llm_client)
         metrics = ExecutionMetrics()
@@ -191,13 +191,7 @@ class LettaAgent:
         if not final_result or not trace.execution_result or not trace.execution_result.success:
             return metrics
 
-        # 1. Faithfulness
-        metrics.faithfulness = await evaluator.evaluate_faithfulness(
-            context=context,
-            final_result=final_result,
-        )
-
-        # 2. Compression
+        # 1. Compression
         child_count = len(trace.child_traces)
         metrics.compression = evaluator.evaluate_compression(
             context=context,
