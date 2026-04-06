@@ -5,6 +5,7 @@ from collections import Counter
 from typing import List
 
 from rouge_score import rouge_scorer
+from bert_score import score as bert_score_fn
 
 
 def normalize_text(text: str) -> str:
@@ -65,6 +66,42 @@ def compute_rouge(prediction: str, reference: str) -> dict:
     }
 
 
+def compute_bertscore(prediction: str, reference: str) -> float:
+    """
+    Compute BERTScore F1 between prediction and reference.
+
+    Uses embedding-based similarity to catch semantic matches
+    that token-level F1 misses (e.g. "he died" vs "he passed away").
+    """
+    if not prediction or not reference:
+        return 0.0
+
+    P, R, F1 = bert_score_fn(
+        [prediction], [reference],
+        lang="en",
+        verbose=False,
+    )
+    return F1.item()
+
+
+def answer_length_ratio(prediction: str, reference_answers: List[str]) -> float:
+    """
+    Compute the length ratio of prediction vs average reference length.
+
+    Returns pred_len / ref_len. Ideal is ~1.0.
+    Values >> 1.0 mean the model is too verbose.
+    Values << 1.0 mean the model is too terse.
+    """
+    ref_lengths = [len(r.split()) for r in reference_answers if r]
+    if not ref_lengths:
+        return 0.0
+    avg_ref_len = sum(ref_lengths) / len(ref_lengths)
+    pred_len = len(prediction.split()) if prediction else 0
+    if avg_ref_len == 0:
+        return 0.0
+    return pred_len / avg_ref_len
+
+
 def score_prediction(prediction: str, reference_answers: List[str]) -> dict:
     """
     Score a prediction against one or more reference answers.
@@ -75,6 +112,7 @@ def score_prediction(prediction: str, reference_answers: List[str]) -> dict:
     best_f1 = 0.0
     best_em = 0.0
     best_rouge = {"rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0}
+    best_bertscore = 0.0
 
     for ref in reference_answers:
         if not ref:
@@ -83,17 +121,24 @@ def score_prediction(prediction: str, reference_answers: List[str]) -> dict:
         f1 = token_f1(prediction, ref)
         em = exact_match(prediction, ref)
         rouge = compute_rouge(prediction, ref)
+        bs = compute_bertscore(prediction, ref)
 
         if f1 > best_f1:
             best_f1 = f1
         if em > best_em:
             best_em = em
+        if bs > best_bertscore:
+            best_bertscore = bs
         for key in best_rouge:
             if rouge[key] > best_rouge[key]:
                 best_rouge[key] = rouge[key]
+
+    length_ratio = answer_length_ratio(prediction, reference_answers)
 
     return {
         "f1": round(best_f1, 4),
         "exact_match": round(best_em, 4),
         **{k: round(v, 4) for k, v in best_rouge.items()},
+        "bertscore": round(best_bertscore, 4),
+        "length_ratio": round(length_ratio, 2),
     }

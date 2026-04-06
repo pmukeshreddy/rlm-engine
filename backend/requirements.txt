@@ -25,4 +25,5 @@ pydantic-settings>=2.1.0
 # Benchmarks
 datasets>=2.16.0
 rouge-score>=0.1.2
+bert-score>=0.3.13
 nltk>=3.8.1

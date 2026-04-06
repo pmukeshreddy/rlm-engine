@@ -21,7 +21,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.engine.agent import LettaAgent, AgentConfig
 from app.engine.llm import LLMClient
-from app.engine.metrics import MetricsEvaluator
 
 from benchmarks.datasets import load_benchmark, BenchmarkSample, DATASET_REGISTRY
 from benchmarks.baseline import DirectLLMBaseline
@@ -65,17 +64,17 @@ def print_comparison_table(results: Dict[str, Any]):
     print("-" * w)
 
     # Accuracy metrics
-    for metric in ["f1", "rouge1", "rouge2", "rougeL", "exact_match"]:
+    for metric in ["f1", "rouge1", "rouge2", "rougeL", "exact_match", "bertscore"]:
         rv = rlm.get(metric, 0)
         dv = direct.get(metric, 0)
         print(f"  {metric:<28} {rv:>12.4f}  {dv:>12.4f}  {winner(rv, dv):>8}")
 
     print("-" * w)
 
-    # Faithfulness
-    rv = rlm.get("faithfulness", 0)
-    dv = direct.get("faithfulness", 0)
-    print(f"  {'faithfulness_score':<28} {rv:>12.3f}  {dv:>12.3f}  {winner(rv, dv):>8}")
+    # Answer length ratio (closer to 1.0 is better)
+    rv = rlm.get("length_ratio", 0)
+    dv = direct.get("length_ratio", 0)
+    print(f"  {'answer_length_ratio':<28} {rv:>12.2f}  {dv:>12.2f}  {'':>8}")
 
     print("-" * w)
 
@@ -126,7 +125,8 @@ def aggregate_results(per_sample: List[Dict[str, Any]], approach: str) -> Dict[s
         "rouge1": avg_score("rouge1"),
         "rouge2": avg_score("rouge2"),
         "rougeL": avg_score("rougeL"),
-        "faithfulness": avg("faithfulness_score"),
+        "bertscore": avg_score("bertscore"),
+        "length_ratio": avg_score("length_ratio"),
         "avg_tokens": avg("total_tokens"),
         "avg_cost": avg("cost_usd"),
         "avg_latency_ms": avg("latency_ms"),
@@ -148,7 +148,6 @@ async def run_benchmark(
     n_samples: int,
     model: str,
     output_path: str = None,
-    eval_model: str = "gpt-4o-mini",
     **dataset_kwargs,
 ):
     # Load dataset
@@ -162,7 +161,6 @@ async def run_benchmark(
     llm_client = LLMClient()
     agent = LettaAgent(llm_client=llm_client, config=AgentConfig(model=model))
     baseline = DirectLLMBaseline(llm_client=llm_client)
-    evaluator = MetricsEvaluator(llm_client=llm_client)
 
     per_sample_results = []
 
@@ -190,17 +188,8 @@ async def run_benchmark(
             if trace.execution_result and trace.execution_result.success:
                 rlm_answer = trace.execution_result.final_result or ""
 
-            # Score against references
+            # Score against references (includes F1, ROUGE, BERTScore, length_ratio)
             rlm_scores = score_prediction(rlm_answer, sample.reference_answers)
-
-            # Faithfulness
-            faith_result = None
-            if rlm_answer:
-                faith_result = await evaluator.evaluate_faithfulness(
-                    context=sample.context,
-                    final_result=rlm_answer,
-                    model=eval_model,
-                )
 
             # Compression
             comp_result = None
@@ -218,10 +207,7 @@ async def run_benchmark(
                 "cost_usd": trace.total_cost_usd,
                 "latency_ms": rlm_latency,
                 "child_calls": len(trace.child_traces),
-                "faithfulness_score": faith_result.score if faith_result else 0,
-                "faithfulness_verdict": faith_result.verdict if faith_result else "N/A",
                 "compression_ratio": comp_result.compression_ratio if comp_result else 0,
-                "info_density": comp_result.info_density_score if comp_result else 0,
                 "success": trace.execution_result.success if trace.execution_result else False,
             }
 
@@ -229,7 +215,7 @@ async def run_benchmark(
             print(f"    [ERROR] RLM failed: {e}")
             result["rlm"] = {"answer": "", "scores": score_prediction("", sample.reference_answers),
                              "total_tokens": 0, "cost_usd": 0, "latency_ms": 0, "child_calls": 0,
-                             "faithfulness_score": 0, "compression_ratio": 0, "success": False, "error": str(e)}
+                             "compression_ratio": 0, "success": False, "error": str(e)}
 
         # --- Direct LLM Baseline ---
         print_progress(i, len(samples), sample.id, "Direct LLM")
@@ -242,15 +228,6 @@ async def run_benchmark(
 
             direct_scores = score_prediction(baseline_result.answer, sample.reference_answers)
 
-            # Faithfulness for baseline too
-            direct_faith = None
-            if baseline_result.answer:
-                direct_faith = await evaluator.evaluate_faithfulness(
-                    context=sample.context,
-                    final_result=baseline_result.answer,
-                    model=eval_model,
-                )
-
             result["direct"] = {
                 "answer": baseline_result.answer,
                 "scores": direct_scores,
@@ -258,15 +235,13 @@ async def run_benchmark(
                 "cost_usd": baseline_result.cost_usd,
                 "latency_ms": baseline_result.latency_ms,
                 "truncated": baseline_result.truncated,
-                "faithfulness_score": direct_faith.score if direct_faith else 0,
-                "faithfulness_verdict": direct_faith.verdict if direct_faith else "N/A",
             }
 
         except Exception as e:
             print(f"    [ERROR] Direct failed: {e}")
             result["direct"] = {"answer": "", "scores": score_prediction("", sample.reference_answers),
                                 "total_tokens": 0, "cost_usd": 0, "latency_ms": 0, "truncated": False,
-                                "faithfulness_score": 0, "error": str(e)}
+                                "error": str(e)}
 
         per_sample_results.append(result)
 
@@ -278,7 +253,6 @@ async def run_benchmark(
         "metadata": {
             "dataset": dataset_name,
             "model": model,
-            "eval_model": eval_model,
             "n_samples": len(samples),
             "timestamp": datetime.now().isoformat(),
         },
@@ -337,11 +311,6 @@ examples:
         help="Model for both RLM and baseline (default: gpt-4o-mini)",
     )
     parser.add_argument(
-        "--eval-model",
-        default="gpt-4o-mini",
-        help="Model for faithfulness evaluation (default: gpt-4o-mini)",
-    )
-    parser.add_argument(
         "--output", "-o",
         default=None,
         help="Path to save full results JSON",
@@ -363,7 +332,6 @@ examples:
         n_samples=args.samples,
         model=args.model,
         output_path=args.output,
-        eval_model=args.eval_model,
         **kwargs,
     ))
 
