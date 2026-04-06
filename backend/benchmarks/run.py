@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.engine.agent import LettaAgent, AgentConfig
 from app.engine.llm import LLMClient
+from app.engine.metrics import MetricsEvaluator
 
 from benchmarks.datasets import load_benchmark, BenchmarkSample, DATASET_REGISTRY
 from benchmarks.baseline import DirectLLMBaseline
@@ -161,6 +162,7 @@ async def run_benchmark(
     llm_client = LLMClient()
     agent = LettaAgent(llm_client=llm_client, config=AgentConfig(model=model))
     baseline = DirectLLMBaseline(llm_client=llm_client)
+    evaluator = MetricsEvaluator(llm_client=llm_client)
 
     per_sample_results = []
 
@@ -191,8 +193,14 @@ async def run_benchmark(
             # Score against references (includes F1, ROUGE, BERTScore, length_ratio)
             rlm_scores = score_prediction(rlm_answer, sample.reference_answers)
 
-            # Compression ratio (simple: input chars / output chars)
-            compression_ratio = len(sample.context) / len(rlm_answer) if rlm_answer else 0
+            # Compression (char + token based)
+            comp_result = None
+            if rlm_answer:
+                comp_result = evaluator.evaluate_compression(
+                    context=sample.context,
+                    final_result=rlm_answer,
+                    child_call_count=len(trace.child_traces),
+                )
 
             result["rlm"] = {
                 "answer": rlm_answer,
@@ -201,7 +209,8 @@ async def run_benchmark(
                 "cost_usd": trace.total_cost_usd,
                 "latency_ms": rlm_latency,
                 "child_calls": len(trace.child_traces),
-                "compression_ratio": compression_ratio,
+                "compression_ratio": comp_result.compression_ratio if comp_result else 0,
+                "token_compression_ratio": comp_result.token_compression_ratio if comp_result else 0,
                 "success": trace.execution_result.success if trace.execution_result else False,
             }
 
@@ -229,6 +238,7 @@ async def run_benchmark(
                 "cost_usd": baseline_result.cost_usd,
                 "latency_ms": baseline_result.latency_ms,
                 "truncated": baseline_result.truncated,
+                "context_tokens_used": baseline_result.context_tokens_used,
             }
 
         except Exception as e:

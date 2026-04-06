@@ -15,29 +15,32 @@ class BaselineResult:
     cost_usd: float
     latency_ms: float
     truncated: bool  # Whether context was truncated to fit
+    context_tokens_used: int  # Actual tokens sent to the model
 
 
 class DirectLLMBaseline:
     """
     Baseline approach: stuff the full context into a single LLM call.
 
-    If the context exceeds the model's limit, it truncates from the middle
-    (keeps beginning + end, which is standard for long-context baselines).
+    Sends the full context without truncation for a fair apple-to-apple
+    comparison with RLM Engine. Both approaches see the same input.
+
+    Only truncates if the context truly exceeds the model's context window.
     """
 
-    # Approximate context window limits (in tokens, leaving room for prompt + output)
+    # Context window limits (in tokens) — full window, not reduced
     MODEL_LIMITS = {
-        "gpt-4o": 120000,
-        "gpt-4o-mini": 120000,
-        "gpt-4-turbo-preview": 120000,
-        "gpt-4-turbo": 120000,
-        "gpt-4": 7000,
-        "gpt-3.5-turbo": 14000,
-        "claude-3-opus-20240229": 190000,
-        "claude-3-sonnet-20240229": 190000,
-        "claude-3-haiku-20240307": 190000,
-        "claude-3-5-sonnet-20241022": 190000,
-        "claude-sonnet-4-6": 190000,
+        "gpt-4o": 128000,
+        "gpt-4o-mini": 128000,
+        "gpt-4-turbo-preview": 128000,
+        "gpt-4-turbo": 128000,
+        "gpt-4": 8192,
+        "gpt-3.5-turbo": 16384,
+        "claude-3-opus-20240229": 200000,
+        "claude-3-sonnet-20240229": 200000,
+        "claude-3-haiku-20240307": 200000,
+        "claude-3-5-sonnet-20241022": 200000,
+        "claude-sonnet-4-6": 200000,
     }
 
     def __init__(self, llm_client: Optional[LLMClient] = None):
@@ -45,12 +48,12 @@ class DirectLLMBaseline:
 
     def _truncate_context(self, context: str, model: str) -> tuple[str, bool]:
         """
-        Truncate context to fit model's window.
+        Truncate context ONLY if it exceeds the model's actual context window.
 
-        Keeps beginning and end (middle-out truncation), which preserves
-        document structure better than simple head truncation.
+        For a fair comparison, we want the baseline to see the same full
+        context that RLM processes. Truncation is a last resort.
         """
-        max_tokens = self.MODEL_LIMITS.get(model, 14000)
+        max_tokens = self.MODEL_LIMITS.get(model, 16384)
         # Reserve tokens for system prompt, question, and output
         available_tokens = max_tokens - 2000
 
@@ -80,9 +83,11 @@ class DirectLLMBaseline:
         model: str = "gpt-4o-mini",
     ) -> BaselineResult:
         """
-        Run the baseline: single LLM call with full (or truncated) context.
+        Run the baseline: single LLM call with full context.
+        Only truncates if context exceeds the model's actual window.
         """
         context_for_prompt, truncated = self._truncate_context(context, model)
+        context_tokens = count_tokens(context_for_prompt, model)
 
         start = time.perf_counter()
         response = await self.llm_client.complete(
@@ -109,4 +114,5 @@ class DirectLLMBaseline:
             cost_usd=response.cost_usd,
             latency_ms=latency_ms,
             truncated=truncated,
+            context_tokens_used=context_tokens,
         )
