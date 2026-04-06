@@ -37,6 +37,7 @@ class DirectLLMBaseline:
         "claude-3-sonnet-20240229": 190000,
         "claude-3-haiku-20240307": 190000,
         "claude-3-5-sonnet-20241022": 190000,
+        "claude-sonnet-4-6": 190000,
     }
 
     def __init__(self, llm_client: Optional[LLMClient] = None):
@@ -91,11 +92,11 @@ class DirectLLMBaseline:
                     f"Answer the following question based on the provided context.\n\n"
                     f"Context:\n{context_for_prompt}\n\n"
                     f"Question: {question}\n\n"
-                    f"Answer concisely and accurately based only on the context provided."
+                    f"Answer in 1-2 short sentences maximum. Give ONLY the answer, no explanation or preamble."
                 ),
             }],
             model=model,
-            system_prompt="You answer questions based on provided context. Be concise and accurate.",
+            system_prompt="You answer questions based on provided context. Give short, direct answers — ideally under 20 words. Never repeat the question or add unnecessary context.",
             temperature=0.3,
             max_tokens=1024,
         )

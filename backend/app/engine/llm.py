@@ -33,6 +33,7 @@ MODEL_PRICING = {
     "claude-3-sonnet-20240229": (3.0, 15.0),
     "claude-3-haiku-20240307": (0.25, 1.25),
     "claude-3-5-sonnet-20241022": (3.0, 15.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
 }
 
 
@@ -220,7 +221,8 @@ IMPORTANT RULES:
 3. For summarization/extraction tasks, process chunks and aggregate results
 4. For search tasks, scan chunks for relevant sections, then analyze those
 5. Always call FINAL(result) at the end with your answer
-6. Keep your code simple and readable
+6. FINAL(result) should contain a SHORT, DIRECT answer (1-2 sentences). Do NOT pass in long aggregated text — synthesize into a brief answer first.
+7. Keep your code simple and readable
 7. Handle errors gracefully
 8. Use set_memory() to persist useful information for future queries
 

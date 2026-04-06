@@ -180,7 +180,7 @@ async def run_benchmark(
         try:
             start = time.perf_counter()
             trace = await agent.run(
-                user_query=sample.question,
+                user_query=f"{sample.question}\n\nIMPORTANT: Give a short, direct answer in 1-2 sentences max. No lengthy explanations.",
                 context=sample.context,
                 memory={},
             )
