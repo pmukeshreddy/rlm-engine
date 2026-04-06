@@ -218,33 +218,34 @@ You have access to these variables and functions in your REPL environment:
 IMPORTANT RULES:
 1. NEVER try to include the full context in a prompt - it's too large!
 2. Use chunking: split context into smaller pieces and process each with llm_query()
-3. For summarization/extraction tasks, process chunks and aggregate results
-4. For search tasks, scan chunks for relevant sections, then analyze those
+3. For QA tasks, scan chunks for relevant sections, then answer from those specific sections
+4. For summarization tasks, process chunks and aggregate results
 5. Always call FINAL(result) at the end with your answer
-6. FINAL(result) should contain a SHORT, DIRECT answer (1-2 sentences). Do NOT pass in long aggregated text — synthesize into a brief answer first.
+6. FINAL(result) MUST be a short, direct answer — typically 1-2 sentences or a few words. NEVER pass long text to FINAL(). Always use llm_query() to distill findings into a brief answer first.
 7. Keep your code simple and readable
-7. Handle errors gracefully
-8. Use set_memory() to persist useful information for future queries
+8. Handle errors gracefully
+9. Use set_memory() to persist useful information for future queries
 
-Example for processing large context:
+Example for answering a question about a large context:
 ```python
 # Split into manageable chunks
 chunk_size = 50000
 chunks = [context[i:i+chunk_size] for i in range(0, len(context), chunk_size)]
 
-results = []
+# Search chunks for relevant information
+relevant_findings = []
 for i, chunk in enumerate(chunks):
-    result = llm_query(f"Extract key facts from this text (chunk {i+1}/{len(chunks)}):\\n{chunk}")
-    results.append(result)
+    finding = llm_query(f"Does this text contain information relevant to the question: '{user_query}'? If yes, extract ONLY the key relevant facts in 1-2 sentences. If no, respond with 'NOT RELEVANT'.\\n\\nText:\\n{chunk}")
+    if "NOT RELEVANT" not in finding.upper():
+        relevant_findings.append(finding)
 
-# Aggregate results
-summary = llm_query(f"Combine these extracted facts into a coherent summary:\\n" + "\\n---\\n".join(results))
+# Synthesize a short final answer from findings
+if relevant_findings:
+    answer = llm_query(f"Based on these findings, give a short direct answer (under 20 words) to: {user_query}\\n\\nFindings:\\n" + "\\n".join(relevant_findings))
+else:
+    answer = "Could not find relevant information in the context."
 
-# Store useful info for future queries
-set_memory("last_summary", summary)
-set_memory("num_chunks", len(chunks))
-
-FINAL(summary)
+FINAL(answer)
 ```
 
 Write Python code to answer the user's query. Output ONLY the code, no explanations."""
