@@ -5,7 +5,18 @@ from collections import Counter
 from typing import List
 
 from rouge_score import rouge_scorer
-from bert_score import score as bert_score_fn
+from bert_score import BERTScorer
+
+
+# Cache BERTScorer so the model loads once, not per-call
+_bert_scorer = None
+
+
+def _get_bert_scorer() -> BERTScorer:
+    global _bert_scorer
+    if _bert_scorer is None:
+        _bert_scorer = BERTScorer(lang="en", rescale_with_baseline=True)
+    return _bert_scorer
 
 
 def normalize_text(text: str) -> str:
@@ -72,15 +83,13 @@ def compute_bertscore(prediction: str, reference: str) -> float:
 
     Uses embedding-based similarity to catch semantic matches
     that token-level F1 misses (e.g. "he died" vs "he passed away").
+    Model is loaded once and cached for all subsequent calls.
     """
     if not prediction or not reference:
         return 0.0
 
-    P, R, F1 = bert_score_fn(
-        [prediction], [reference],
-        lang="en",
-        verbose=False,
-    )
+    scorer = _get_bert_scorer()
+    P, R, F1 = scorer.score([prediction], [reference])
     return F1.item()
 
 

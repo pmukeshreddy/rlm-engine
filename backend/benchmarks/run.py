@@ -191,14 +191,8 @@ async def run_benchmark(
             # Score against references (includes F1, ROUGE, BERTScore, length_ratio)
             rlm_scores = score_prediction(rlm_answer, sample.reference_answers)
 
-            # Compression
-            comp_result = None
-            if rlm_answer:
-                comp_result = evaluator.evaluate_compression(
-                    context=sample.context,
-                    final_result=rlm_answer,
-                    child_call_count=len(trace.child_traces),
-                )
+            # Compression ratio (simple: input chars / output chars)
+            compression_ratio = len(sample.context) / len(rlm_answer) if rlm_answer else 0
 
             result["rlm"] = {
                 "answer": rlm_answer,
@@ -207,7 +201,7 @@ async def run_benchmark(
                 "cost_usd": trace.total_cost_usd,
                 "latency_ms": rlm_latency,
                 "child_calls": len(trace.child_traces),
-                "compression_ratio": comp_result.compression_ratio if comp_result else 0,
+                "compression_ratio": compression_ratio,
                 "success": trace.execution_result.success if trace.execution_result else False,
             }
 
