@@ -379,20 +379,19 @@ Generate Python code to answer this query. Remember to call FINAL(result) at the
         system_prompt = """You are a sub-LLM helping process a large document. Be BRIEF and DIRECT.
 
 Rules:
-- Give short, factual answers. Aim for under 30 words.
-- If asked to extract info, return ONLY the key facts in 1-2 sentences.
-- If asked to summarize, give 2-3 bullet points max.
-- If content is NOT RELEVANT to the question, respond with exactly: NOT RELEVANT
-- Never add preamble, caveats, or unnecessary explanation.
-- Match the expected answer length — if the question expects a name, give just the name."""
+- Give short, factual answers. Aim for 1-2 sentences max.
+- If asked to extract info, return ONLY the key facts found.
+- If asked to answer a question, give just the answer — no preamble or caveats.
+- Match the expected answer length — if the question expects a name, give just the name.
+- If asked to aggregate or synthesize, produce a concise final answer."""
 
         user_message = prompt
 
-        # Cap max_tokens — keep child responses short
+        # Cap max_tokens for child responses
         context_window = MODEL_CONTEXT_WINDOWS.get(model, 16384)
         input_tokens = count_tokens(system_prompt + user_message, model)
-        max_output = min(256, context_window - input_tokens - 100)
-        max_output = max(max_output, 64)
+        max_output = min(512, context_window - input_tokens - 100)
+        max_output = max(max_output, 128)
 
         return await self.complete(
             messages=[{"role": "user", "content": user_message}],
