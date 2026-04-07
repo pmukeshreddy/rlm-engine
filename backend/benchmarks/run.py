@@ -192,6 +192,15 @@ async def run_benchmark(
             rlm_answer = ""
             if trace.execution_result and trace.execution_result.success:
                 rlm_answer = trace.execution_result.final_result or ""
+            else:
+                # Debug: show why RLM failed
+                err = trace.execution_result.error if trace.execution_result else "No execution result"
+                print(f"    [RLM FAIL] success={trace.execution_result.success if trace.execution_result else None}")
+                print(f"    [RLM ERROR] {err[:500]}")
+                if trace.execution_result and trace.execution_result.output_log:
+                    for log in trace.execution_result.output_log[-5:]:
+                        print(f"    [RLM LOG] {log[:200]}")
+                print(f"    [RLM CODE] {trace.generated_code[:500]}")
 
             # Debug: show RLM answer vs reference
             rlm_words = len(rlm_answer.split()) if rlm_answer else 0
