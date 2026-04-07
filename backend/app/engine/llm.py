@@ -19,6 +19,21 @@ class LLMResponse:
     raw_response: Optional[Dict[str, Any]] = None
 
 
+# Context window sizes in tokens
+MODEL_CONTEXT_WINDOWS = {
+    "gpt-4": 8192,
+    "gpt-3.5-turbo": 16384,
+    "gpt-4-turbo-preview": 128000,
+    "gpt-4-turbo": 128000,
+    "gpt-4o": 128000,
+    "gpt-4o-mini": 128000,
+    "claude-3-opus-20240229": 200000,
+    "claude-3-sonnet-20240229": 200000,
+    "claude-3-haiku-20240307": 200000,
+    "claude-3-5-sonnet-20241022": 200000,
+    "claude-sonnet-4-6": 200000,
+}
+
 # Pricing per 1M tokens (input, output)
 MODEL_PRICING = {
     # OpenAI
@@ -280,9 +295,11 @@ Generate Python code to answer this query. Remember to call FINAL(result) at the
     ) -> LLMResponse:
         """
         Execute a child agent query (called via llm_query in the REPL).
-        
+
         Child agents answer specific questions and can access parent memory.
         """
+        model = model or settings.default_model
+
         system_prompt = """You are a Letta child agent helping to process a large document.
 
 You receive a specific prompt from the parent agent and should provide a direct, helpful answer.
@@ -297,9 +314,17 @@ If you're asked to analyze, provide clear insights."""
 
 Task: {prompt}"""
 
+        # Cap max_tokens based on model's context window to avoid overflow
+        context_window = MODEL_CONTEXT_WINDOWS.get(model, 16384)
+        # Estimate input tokens: system prompt (~100) + user message
+        estimated_input = 100 + (len(user_message) // 4)
+        max_output = min(1024, context_window - estimated_input - 200)
+        max_output = max(max_output, 256)  # Floor at 256
+
         return await self.complete(
             messages=[{"role": "user", "content": user_message}],
             model=model,
             system_prompt=system_prompt,
             temperature=0.5,
+            max_tokens=max_output,
         )

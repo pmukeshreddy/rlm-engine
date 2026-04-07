@@ -4,31 +4,16 @@ from typing import Optional, Dict, Any, List, Callable
 from datetime import datetime
 from dataclasses import dataclass, field
 
-# Model context window sizes in tokens — used to calculate max chunk chars
-MODEL_CONTEXT_WINDOWS = {
-    "gpt-4": 8192,
-    "gpt-3.5-turbo": 16384,
-    "gpt-4-turbo-preview": 128000,
-    "gpt-4-turbo": 128000,
-    "gpt-4o": 128000,
-    "gpt-4o-mini": 128000,
-    "claude-3-opus-20240229": 200000,
-    "claude-3-sonnet-20240229": 200000,
-    "claude-3-haiku-20240307": 200000,
-    "claude-3-5-sonnet-20241022": 200000,
-    "claude-sonnet-4-6": 200000,
-}
-
-
 def _max_chunk_chars_for_model(model: str) -> int:
     """Calculate the max chars per chunk that fits in the model's context window."""
     max_tokens = MODEL_CONTEXT_WINDOWS.get(model, 16384)
-    # Reserve tokens for system prompt, instructions, and output
-    available_tokens = max_tokens - 2000
+    # Reserve tokens for system prompt (~100), memory context (~200),
+    # prompt instructions (~100), and output (~1024)
+    available_tokens = max_tokens - 1500
     # ~4 chars per token for English text
     return available_tokens * 4
 
-from app.engine.llm import LLMClient, LLMResponse
+from app.engine.llm import LLMClient, LLMResponse, MODEL_CONTEXT_WINDOWS
 from app.engine.repl import REPLExecutor, ExecutionResult, ChildCall
 from app.engine.metrics import MetricsEvaluator, ExecutionMetrics
 from app.config import settings
