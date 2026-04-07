@@ -54,21 +54,24 @@ class REPLExecutor:
         memory: Dict[str, Any],
         llm_query_fn: Callable[[str], Any],
         on_child_call: Optional[Callable[[ChildCall], None]] = None,
+        max_chunk_chars: int = 50000,
     ):
         """
         Initialize the REPL executor.
-        
+
         Args:
             context: The full context string
             memory: Dictionary of persistent memory
             llm_query_fn: Async function to call child agents
             on_child_call: Callback when a child call completes
+            max_chunk_chars: Maximum characters per chunk for the model's context window
         """
         self.context = context
         self.memory = memory.copy()  # Working copy of memory
         self._initial_memory = memory.copy()  # Original state for diff
         self._llm_query_fn = llm_query_fn
         self._on_child_call = on_child_call
+        self._max_chunk_chars = max_chunk_chars
         
         self._final_result: Optional[str] = None
         self._child_calls: List[ChildCall] = []
@@ -232,6 +235,7 @@ class REPLExecutor:
             env = {
                 'context': self.context,
                 'memory': self.memory,
+                'MAX_CHUNK_CHARS': self._max_chunk_chars,
                 'llm_query': self._create_llm_query_fn(),
                 'FINAL': self._create_final_fn(),
                 'set_memory': self._create_set_memory_fn(),

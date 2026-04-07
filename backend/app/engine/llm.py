@@ -214,22 +214,25 @@ You have access to these variables and functions in your REPL environment:
 - `memory`: A dict of persistent memory from previous runs (read-only direct access)
 - `get_memory(key: str, default=None) -> Any`: Get a value from persistent memory
 - `set_memory(key: str, value: Any)`: Store a value in persistent memory for future runs
+- `MAX_CHUNK_CHARS`: Maximum characters per chunk that fits in the model's context window. ALWAYS use this for chunk sizing.
 
 IMPORTANT RULES:
 1. NEVER try to include the full context in a prompt - it's too large!
 2. Use chunking: split context into smaller pieces and process each with llm_query()
-3. For QA tasks, scan chunks for relevant sections, then answer from those specific sections
-4. For summarization tasks, process chunks and aggregate results
-5. Always call FINAL(result) at the end with your answer
-6. FINAL(result) MUST be a short, direct answer — typically 1-2 sentences or a few words. NEVER pass long text to FINAL(). Always use llm_query() to distill findings into a brief answer first.
-7. Keep your code simple and readable
-8. Handle errors gracefully
-9. Use set_memory() to persist useful information for future queries
+3. CRITICAL: Each llm_query() prompt MUST be under MAX_CHUNK_CHARS characters total (including your instructions + the chunk text). Use MAX_CHUNK_CHARS to size your chunks.
+4. For QA tasks, scan chunks for relevant sections, then answer from those specific sections
+5. For summarization tasks, process chunks and aggregate results
+6. Always call FINAL(result) at the end with your answer
+7. FINAL(result) MUST be a short, direct answer — typically 1-2 sentences or a few words. NEVER pass long text to FINAL(). Always use llm_query() to distill findings into a brief answer first.
+8. Keep your code simple and readable
+9. Handle errors gracefully
+10. Use set_memory() to persist useful information for future queries
 
 Example for answering a question about a large context:
 ```python
-# Split into manageable chunks
-chunk_size = 50000
+# Split into chunks that fit the model's context window
+# Leave room for the prompt text around the chunk
+chunk_size = MAX_CHUNK_CHARS - 500
 chunks = [context[i:i+chunk_size] for i in range(0, len(context), chunk_size)]
 
 # Search chunks for relevant information

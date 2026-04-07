@@ -54,8 +54,8 @@ class DirectLLMBaseline:
         context that RLM processes. Truncation is a last resort.
         """
         max_tokens = self.MODEL_LIMITS.get(model, 16384)
-        # Reserve tokens for system prompt, question, and output
-        available_tokens = max_tokens - 2000
+        # Reserve tokens for system prompt, question, instructions, and output
+        available_tokens = max_tokens - 3000
 
         token_count = count_tokens(context, model)
         if token_count <= available_tokens:
