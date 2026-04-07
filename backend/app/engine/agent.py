@@ -7,11 +7,10 @@ from dataclasses import dataclass, field
 def _max_chunk_chars_for_model(model: str) -> int:
     """Calculate the max chars per chunk that fits in the model's context window."""
     max_tokens = MODEL_CONTEXT_WINDOWS.get(model, 16384)
-    # Reserve tokens for system prompt (~100), memory context (~200),
-    # prompt instructions (~100), and output (~1024)
-    available_tokens = max_tokens - 1500
-    # ~4 chars per token for English text
-    return available_tokens * 4
+    # Reserve: system prompt (~150), memory context (~200), prompt text (~200), output (~1024)
+    available_tokens = max_tokens - 1600
+    # Use conservative 3.5 chars per token (real ratio is ~4.75 for narrative text)
+    return int(available_tokens * 3.5)
 
 from app.engine.llm import LLMClient, LLMResponse, MODEL_CONTEXT_WINDOWS
 from app.engine.repl import REPLExecutor, ExecutionResult, ChildCall

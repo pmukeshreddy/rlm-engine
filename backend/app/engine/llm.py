@@ -316,9 +316,9 @@ Task: {prompt}"""
 
         # Cap max_tokens based on model's context window to avoid overflow
         context_window = MODEL_CONTEXT_WINDOWS.get(model, 16384)
-        # Estimate input tokens: system prompt (~100) + user message
-        estimated_input = 100 + (len(user_message) // 4)
-        max_output = min(1024, context_window - estimated_input - 200)
+        # Count actual tokens instead of estimating
+        input_tokens = count_tokens(system_prompt + user_message, model)
+        max_output = min(1024, context_window - input_tokens - 100)
         max_output = max(max_output, 256)  # Floor at 256
 
         return await self.complete(

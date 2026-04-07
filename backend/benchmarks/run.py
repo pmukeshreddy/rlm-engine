@@ -179,6 +179,10 @@ async def run_benchmark(
         print(f"    [REF] {sample.reference_answers}")
 
         # --- RLM Engine ---
+        from app.engine.agent import _max_chunk_chars_for_model
+        max_cc = _max_chunk_chars_for_model(model)
+        num_chunks = (len(sample.context) // max_cc) + 1
+        print(f"    [CHUNK INFO] MAX_CHUNK_CHARS={max_cc}, context={len(sample.context)}, est_chunks={num_chunks}")
         print_progress(i, len(samples), sample.id, "RLM Engine")
         try:
             start = time.perf_counter()
