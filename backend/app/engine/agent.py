@@ -503,14 +503,22 @@ class LettaAgent:
                     else:
                         feedback = f"REPL Output ({len(step_result.stdout)} chars):\n{truncated_stdout}"
 
+                    # Escalate urgency as iterations progress
+                    remaining = self.config.max_iterations - iteration - 1
+                    if remaining <= 2:
+                        feedback += f"\n\nURGENT: You have only {remaining} iteration(s) left. You MUST call FINAL(your_answer) NOW with whatever answer you have. Do NOT write more code. Just write: FINAL(your answer here)"
+                    elif remaining <= 4:
+                        feedback += "\n\nIMPORTANT: You are running low on iterations. Synthesize your findings and call FINAL(answer) soon."
+                    else:
+                        feedback += "\n\nContinue. When you have your final answer, call FINAL(answer) outside of code blocks."
+
                     conversation_history.append({
                         "role": "user",
-                        "content": feedback + "\n\nContinue. When you have your final answer, call FINAL(answer) outside of code blocks.",
+                        "content": feedback,
                     })
                     continue
 
                 # No code and no FINAL — LLM is just reasoning in text
-                # Append and continue (this shouldn't happen often)
                 self._current_trace.iterations.append({
                     "iteration": iteration + 1,
                     "llm_output": llm_output[:500],
@@ -520,28 +528,65 @@ class LettaAgent:
                     "role": "assistant",
                     "content": llm_output,
                 })
-                conversation_history.append({
-                    "role": "user",
-                    "content": "Please write code in ```repl blocks to explore the context and work toward your answer. Call FINAL(answer) when done.",
-                })
+
+                remaining = self.config.max_iterations - iteration - 1
+                if remaining <= 2:
+                    conversation_history.append({
+                        "role": "user",
+                        "content": f"URGENT: {remaining} iteration(s) left. Call FINAL(your_answer) NOW. Do NOT write code. Just respond with: FINAL(your best answer)",
+                    })
+                else:
+                    conversation_history.append({
+                        "role": "user",
+                        "content": "Please write code in ```repl blocks to explore the context. Call FINAL(answer) when done.",
+                    })
                 continue
 
-            # Exhausted iterations without FINAL
+            # Exhausted iterations without FINAL — try to salvage an answer
+            # Look for any useful variables in the REPL environment
+            fallback_answer = None
+            for var_name in ['final_answer', 'answer', 'result', 'summary', 'findings', 'buffers']:
+                if var_name in repl._env and repl._env[var_name]:
+                    val = repl._env[var_name]
+                    if isinstance(val, list):
+                        fallback_answer = " ".join(str(v) for v in val[:3])
+                    else:
+                        fallback_answer = str(val)
+                    break
+
+            # If no variable found, use last non-empty stdout
+            if not fallback_answer:
+                for log_entry in reversed(repl._output_log):
+                    if log_entry.startswith("[print]") and len(log_entry) > 10:
+                        fallback_answer = log_entry[8:].strip()
+                        break
+
             self._current_trace.generated_code = "\n\n".join(all_code_blocks)
-            self._current_trace.execution_result = ExecutionResult(
-                success=False,
-                error=f"RLM loop exhausted {self.config.max_iterations} iterations without calling FINAL",
-                output_log=repl._output_log,
-                child_calls=[vars(c) for c in repl._child_calls],
-                execution_time_ms=(datetime.utcnow() - self._current_trace.started_at).total_seconds() * 1000,
-                memory_changes=repl.get_memory_changes(),
-            )
+            if fallback_answer:
+                # Use salvaged answer as partial success
+                self._current_trace.execution_result = ExecutionResult(
+                    success=True,
+                    final_result=fallback_answer[:500],
+                    output_log=repl._output_log,
+                    child_calls=[vars(c) for c in repl._child_calls],
+                    execution_time_ms=(datetime.utcnow() - self._current_trace.started_at).total_seconds() * 1000,
+                    memory_changes=repl.get_memory_changes(),
+                )
+            else:
+                self._current_trace.execution_result = ExecutionResult(
+                    success=False,
+                    error=f"RLM loop exhausted {self.config.max_iterations} iterations without calling FINAL",
+                    output_log=repl._output_log,
+                    child_calls=[vars(c) for c in repl._child_calls],
+                    execution_time_ms=(datetime.utcnow() - self._current_trace.started_at).total_seconds() * 1000,
+                    memory_changes=repl.get_memory_changes(),
+                )
             self._current_trace.completed_at = datetime.utcnow()
 
             if self.on_node_update:
                 self.on_node_update({
-                    "type": "execution_error",
-                    "data": {"error": "Max iterations reached"}
+                    "type": "execution_complete" if fallback_answer else "execution_error",
+                    "data": {"error": "Max iterations reached", "fallback": bool(fallback_answer)}
                 })
 
             return self._current_trace
