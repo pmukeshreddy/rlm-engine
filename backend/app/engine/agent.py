@@ -31,7 +31,11 @@ def _max_chunk_chars_for_model(model: str) -> int:
 
 
 # Max stdout chars to show back to the LLM per iteration
-STDOUT_TRUNCATE_CHARS = 2000
+# Paper footnote 1: "Only (constant-size) metadata about stdout, like
+# a short prefix and length". Keep this small to force the model to
+# rely on llm_query() for semantic analysis rather than reading raw
+# context through print() output.
+STDOUT_TRUNCATE_CHARS = 500
 
 # Max iterations of the RLM loop
 MAX_RLM_ITERATIONS = 10

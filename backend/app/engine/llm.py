@@ -97,7 +97,7 @@ The REPL environment is initialized with:
 3. The ability to use 'print()' statements to view the output of your REPL code and continue your reasoning.
 4. A 'MAX_CHUNK_CHARS' variable ({max_chunk_chars:,}) indicating the maximum characters per sub-LLM call.
 
-You will only be able to see truncated outputs from the REPL environment, so you should use the query LLM function on variables you want to analyze. You will find this function especially useful when you have to analyze the semantics of the context.
+CRITICAL: You will only be able to see very short truncated outputs (first ~200 chars) from the REPL environment. You CANNOT read the context through print() — the output will be truncated. You MUST use the llm_query() function to analyze chunks of context. This is the only way to understand the content semantically.
 
 Use these variables as buffers to build up your final answer.
 
