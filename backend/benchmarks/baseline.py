@@ -28,7 +28,8 @@ class DirectLLMBaseline:
     Only truncates if the context truly exceeds the model's context window.
     """
 
-    # Context window limits (in tokens) — full window, not reduced
+    # Context window limits (in tokens)
+    # gpt-4.1-nano/mini capped at 16K to force truncation (real window is 1M)
     MODEL_LIMITS = {
         "gpt-4o": 128000,
         "gpt-4o-mini": 128000,
@@ -36,6 +37,8 @@ class DirectLLMBaseline:
         "gpt-4-turbo": 128000,
         "gpt-4": 8192,
         "gpt-3.5-turbo": 16384,
+        "gpt-4.1-nano": 16384,
+        "gpt-4.1-mini": 16384,
         "claude-3-opus-20240229": 200000,
         "claude-3-sonnet-20240229": 200000,
         "claude-3-haiku-20240307": 200000,

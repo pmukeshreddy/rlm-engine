@@ -20,6 +20,9 @@ class LLMResponse:
 
 
 # Context window sizes in tokens
+# NOTE: gpt-4.1-nano's real window is 1M tokens, but we cap it at 16K
+# to force chunking so RLM's advantage over Direct is visible on
+# datasets like NarrativeQA (~100K tokens avg).
 MODEL_CONTEXT_WINDOWS = {
     "gpt-4": 8192,
     "gpt-3.5-turbo": 16384,
@@ -27,6 +30,8 @@ MODEL_CONTEXT_WINDOWS = {
     "gpt-4-turbo": 128000,
     "gpt-4o": 128000,
     "gpt-4o-mini": 128000,
+    "gpt-4.1-nano": 16384,
+    "gpt-4.1-mini": 16384,
     "claude-3-opus-20240229": 200000,
     "claude-3-sonnet-20240229": 200000,
     "claude-3-haiku-20240307": 200000,
@@ -41,6 +46,8 @@ MODEL_PRICING = {
     "gpt-4-turbo": (10.0, 30.0),
     "gpt-4o": (5.0, 15.0),
     "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4.1-nano": (0.05, 0.20),
+    "gpt-4.1-mini": (0.10, 0.40),
     "gpt-4": (30.0, 60.0),
     "gpt-3.5-turbo": (0.5, 1.5),
     # Anthropic
