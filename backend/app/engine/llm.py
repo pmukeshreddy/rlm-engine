@@ -217,6 +217,10 @@ class LLMClient:
                 messages, model, temperature, max_tokens, system_prompt
             )
 
+    def _uses_max_completion_tokens(self, model: str) -> bool:
+        """Newer OpenAI models (gpt-5+) use max_completion_tokens instead of max_tokens."""
+        return model.startswith("gpt-5") or model.startswith("gpt-4.1")
+
     async def _complete_openai(
         self,
         messages: List[Dict[str, str]],
@@ -228,12 +232,17 @@ class LLMClient:
         if system_prompt:
             messages = [{"role": "system", "content": system_prompt}] + messages
 
-        response = await self.openai.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        kwargs = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        if self._uses_max_completion_tokens(model):
+            kwargs["max_completion_tokens"] = max_tokens
+        else:
+            kwargs["max_tokens"] = max_tokens
+
+        response = await self.openai.chat.completions.create(**kwargs)
 
         content = response.choices[0].message.content or ""
         input_tokens = response.usage.prompt_tokens if response.usage else 0
