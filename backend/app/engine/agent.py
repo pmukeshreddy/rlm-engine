@@ -112,45 +112,62 @@ class ExecutionTrace:
 
 def _truncate_stdout(stdout: str, max_chars: int = STDOUT_TRUNCATE_CHARS) -> str:
     """
-    Truncate stdout to fit in the LLM's context window.
+    Truncate stdout to constant-size metadata for the LLM's history.
 
-    From the paper: "Only (constant-size) metadata about stdout, like a
-    short prefix and length, is appended to M's history for the next iteration."
+    From the paper (footnote 1, page 3): "Only (constant-size) metadata about
+    stdout, like a short prefix and length, is appended to M's history for the
+    next iteration. This is key: it forces M to rely on variables and sub-calls
+    to manage long strings instead of polluting its window."
     """
     if not stdout:
         return "(no output)"
     if len(stdout) <= max_chars:
         return stdout
-    # Show beginning and end, with truncation notice
+    # Show prefix + length metadata, matching paper's approach
     half = max_chars // 2
     return (
-        stdout[:half]
-        + f"\n\n... [truncated {len(stdout) - max_chars} chars] ...\n\n"
+        f"[stdout: {len(stdout)} total chars, showing first and last {half} chars]\n"
+        + stdout[:half]
+        + f"\n\n... [{len(stdout) - max_chars} chars truncated] ...\n\n"
         + stdout[-half:]
     )
 
 
 def _extract_final_from_text(text: str) -> Optional[str]:
     """
-    Check if the LLM responded with FINAL() or FINAL_VAR() outside of code.
+    Check if the LLM responded with FINAL() or FINAL_VAR() outside of code blocks.
 
-    The paper allows: "Use FINAL(your final answer here) to provide the answer
-    directly" — not in code, but as text in the response.
+    Per the paper (Appendix C): "you MUST provide a final answer inside a FINAL
+    function when you have completed your task, NOT in code."
+
+    The LLM may output reasoning + code blocks + then FINAL() as text after.
+    We strip code blocks and look for FINAL/FINAL_VAR in the remaining text.
     """
     import re
-    # Match FINAL(answer) in text (not in code blocks)
-    # Remove code blocks first
-    text_no_code = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
+    # Remove all code blocks (```...```) to get just the prose/text parts
+    text_no_code = re.sub(r'```[a-z]*\n.*?```', '', text, flags=re.DOTALL)
+    text_no_code = text_no_code.strip()
 
-    # Look for FINAL("answer") or FINAL(answer)
-    match = re.search(r'FINAL\((["\']?)(.*?)\1\)\s*$', text_no_code, re.MULTILINE | re.DOTALL)
+    if not text_no_code:
+        return None
+
+    # Look for FINAL_VAR(var_name) — returns a variable from REPL env
+    match = re.search(r'FINAL_VAR\((\w+)\)', text_no_code)
+    if match:
+        return f"__VAR__{match.group(1)}"  # Prefix to signal variable lookup
+
+    # Look for FINAL(answer) with various quote styles
+    # FINAL("answer"), FINAL('answer'), FINAL(answer)
+    match = re.search(r'FINAL\((["\'])(.*?)\1\)', text_no_code, re.DOTALL)
     if match:
         return match.group(2).strip()
 
-    # Look for FINAL_VAR(var_name)
-    match = re.search(r'FINAL_VAR\((\w+)\)', text_no_code)
+    # FINAL(unquoted answer)
+    match = re.search(r'FINAL\(([^)]+)\)', text_no_code, re.DOTALL)
     if match:
-        return match.group(1)  # Return var name, will be resolved by caller
+        val = match.group(1).strip().strip('"\'')
+        if val:
+            return val
 
     return None
 
@@ -366,13 +383,62 @@ class LettaAgent:
                 llm_output = llm_response.content
                 all_code_blocks.append(llm_output)
 
-                # Check if LLM responded with FINAL() in text (not code)
+                # Check if LLM output contains code blocks to execute
+                has_code = '```' in llm_output
+
+                # If there's code, execute it first (it may set up variables
+                # that FINAL_VAR references)
+                if has_code:
+                    # Step 2a: Execute code in persistent REPL
+                    step_result = await repl.execute_step(
+                        code=llm_output,
+                        timeout=self.config.execution_timeout,
+                    )
+
+                    # If FINAL was called inside the code, we're done
+                    if step_result.final_set:
+                        self._current_trace.generated_code = "\n\n".join(all_code_blocks)
+                        self._current_trace.execution_result = ExecutionResult(
+                            success=True,
+                            final_result=step_result.final_value,
+                            output_log=repl._output_log,
+                            child_calls=[vars(c) for c in repl._child_calls],
+                            execution_time_ms=(datetime.utcnow() - self._current_trace.started_at).total_seconds() * 1000,
+                            memory_changes=repl.get_memory_changes(),
+                        )
+                        self._current_trace.completed_at = datetime.utcnow()
+                        self._current_trace.iterations.append({
+                            "iteration": iteration + 1,
+                            "code_preview": llm_output[:500],
+                            "stdout_preview": step_result.stdout[:500],
+                            "final_set": True,
+                            "error": None,
+                            "child_calls": step_result.child_calls_this_step,
+                        })
+                        if self.on_node_update:
+                            self.on_node_update({
+                                "type": "execution_complete",
+                                "data": {
+                                    "success": True,
+                                    "final_result": step_result.final_value,
+                                    "iterations": iteration + 1,
+                                    "total_cost": self._current_trace.total_cost_usd,
+                                }
+                            })
+                        return self._current_trace
+
+                # Now check for FINAL/FINAL_VAR in the text (outside code blocks)
+                # Per paper: "you MUST provide a final answer inside a FINAL function,
+                # NOT in code"
                 text_final = _extract_final_from_text(llm_output)
-                if text_final and '```' not in llm_output:
-                    # LLM gave final answer directly without code
-                    # If it's a variable name, try to resolve it from REPL env
-                    if text_final in repl._env and not text_final.startswith('"'):
-                        final_value = str(repl._env[text_final])
+                if text_final:
+                    # Resolve FINAL_VAR(variable_name)
+                    if text_final.startswith("__VAR__"):
+                        var_name = text_final[7:]
+                        if var_name in repl._env:
+                            final_value = str(repl._env[var_name])
+                        else:
+                            final_value = f"(variable '{var_name}' not found in REPL)"
                     else:
                         final_value = text_final
 
@@ -405,73 +471,60 @@ class LettaAgent:
                         })
                     return self._current_trace
 
-                # Step 2: Execute code in persistent REPL
-                step_result = await repl.execute_step(
-                    code=llm_output,
-                    timeout=self.config.execution_timeout,
-                )
+                # If we had code but no FINAL, continue the loop with stdout feedback
+                if has_code:
+                    # Truncate stdout for feedback (paper: constant-size metadata)
+                    truncated_stdout = _truncate_stdout(step_result.stdout)
 
-                # Truncate stdout for feedback (paper: constant-size metadata)
-                truncated_stdout = _truncate_stdout(step_result.stdout)
-
-                # Record iteration
-                iter_record = {
-                    "iteration": iteration + 1,
-                    "code_preview": llm_output[:500],
-                    "stdout_preview": truncated_stdout[:500],
-                    "final_set": step_result.final_set,
-                    "error": step_result.error,
-                    "child_calls": step_result.child_calls_this_step,
-                }
-                self._current_trace.iterations.append(iter_record)
-
-                if self.on_node_update:
-                    self.on_node_update({
-                        "type": "rlm_step_complete",
-                        "data": iter_record,
-                    })
-
-                # Step 3: Check if FINAL was called
-                if step_result.final_set:
-                    self._current_trace.generated_code = "\n\n".join(all_code_blocks)
-                    self._current_trace.execution_result = ExecutionResult(
-                        success=True,
-                        final_result=step_result.final_value,
-                        output_log=repl._output_log,
-                        child_calls=[vars(c) for c in repl._child_calls],
-                        execution_time_ms=(datetime.utcnow() - self._current_trace.started_at).total_seconds() * 1000,
-                        memory_changes=repl.get_memory_changes(),
-                    )
-                    self._current_trace.completed_at = datetime.utcnow()
+                    iter_record = {
+                        "iteration": iteration + 1,
+                        "code_preview": llm_output[:500],
+                        "stdout_preview": truncated_stdout[:500],
+                        "final_set": False,
+                        "error": step_result.error,
+                        "child_calls": step_result.child_calls_this_step,
+                    }
+                    self._current_trace.iterations.append(iter_record)
 
                     if self.on_node_update:
                         self.on_node_update({
-                            "type": "execution_complete",
-                            "data": {
-                                "success": True,
-                                "final_result": step_result.final_value,
-                                "iterations": iteration + 1,
-                                "total_cost": self._current_trace.total_cost_usd,
-                            }
+                            "type": "rlm_step_complete",
+                            "data": iter_record,
                         })
-                    return self._current_trace
 
-                # Step 4: Append code + stdout to conversation history
-                # (Algorithm 1: hist <- hist || code || Metadata(stdout))
+                    # Append code + stdout to conversation history
+                    conversation_history.append({
+                        "role": "assistant",
+                        "content": llm_output,
+                    })
+
+                    if step_result.error:
+                        feedback = f"REPL Error: {step_result.error}\n\nStdout before error ({len(step_result.stdout)} chars):\n{truncated_stdout}"
+                    else:
+                        feedback = f"REPL Output ({len(step_result.stdout)} chars):\n{truncated_stdout}"
+
+                    conversation_history.append({
+                        "role": "user",
+                        "content": feedback + "\n\nContinue. When you have your final answer, call FINAL(answer) outside of code blocks.",
+                    })
+                    continue
+
+                # No code and no FINAL — LLM is just reasoning in text
+                # Append and continue (this shouldn't happen often)
+                self._current_trace.iterations.append({
+                    "iteration": iteration + 1,
+                    "llm_output": llm_output[:500],
+                    "type": "text_only",
+                })
                 conversation_history.append({
                     "role": "assistant",
                     "content": llm_output,
                 })
-
-                if step_result.error:
-                    feedback = f"REPL Error: {step_result.error}\n\nStdout before error:\n{truncated_stdout}"
-                else:
-                    feedback = f"REPL Output ({len(step_result.stdout)} chars):\n{truncated_stdout}"
-
                 conversation_history.append({
                     "role": "user",
-                    "content": feedback + "\n\nContinue. Remember to call FINAL(answer) when you have your answer.",
+                    "content": "Please write code in ```repl blocks to explore the context and work toward your answer. Call FINAL(answer) when done.",
                 })
+                continue
 
             # Exhausted iterations without FINAL
             self._current_trace.generated_code = "\n\n".join(all_code_blocks)

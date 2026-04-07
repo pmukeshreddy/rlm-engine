@@ -91,7 +91,33 @@ class REPLExecutor:
         self._env: Dict[str, Any] = self._create_base_env()
 
     def _create_base_env(self) -> Dict[str, Any]:
-        """Create the persistent REPL environment with all available functions."""
+        """Create the persistent REPL environment with all available functions.
+
+        Per the paper (Appendix C examples), the REPL supports:
+        - import re (used heavily for regex-based context filtering)
+        - import json
+        - import collections (Counter, defaultdict)
+        - import math
+        These are pre-loaded so 'import X' statements work naturally.
+        """
+        import re as re_module
+        import json as json_module
+        import collections as collections_module
+        import math as math_module
+
+        # Create a safe __builtins__ that allows import of approved modules
+        safe_modules = {
+            're': re_module,
+            'json': json_module,
+            'collections': collections_module,
+            'math': math_module,
+        }
+
+        def safe_import(name, *args, **kwargs):
+            if name in safe_modules:
+                return safe_modules[name]
+            raise ImportError(f"Module '{name}' is not available in the REPL environment. Available: {list(safe_modules.keys())}")
+
         return {
             'context': self.context,
             'memory': self.memory,
@@ -102,6 +128,13 @@ class REPLExecutor:
             'set_memory': self._create_set_memory_fn(),
             'get_memory': self._create_get_memory_fn(),
             'print': self._create_print_fn(),
+            # Pre-loaded modules (paper examples use these)
+            're': re_module,
+            'json': json_module,
+            'collections': collections_module,
+            'math': math_module,
+            'Counter': collections_module.Counter,
+            'defaultdict': collections_module.defaultdict,
             # Safe builtins
             'len': len,
             'str': str,
@@ -137,7 +170,7 @@ class REPLExecutor:
             'True': True,
             'False': False,
             'None': None,
-            '__builtins__': {},
+            '__builtins__': {'__import__': safe_import},
         }
 
     def _create_final_fn(self):
@@ -248,13 +281,13 @@ class REPLExecutor:
                 code = re.sub(r'^```\s*\n?', '', code.strip())
                 code = re.sub(r'\n?```\s*$', '', code.strip())
 
-        # Allow 're' module import (needed for regex-based filtering)
-        # Block dangerous imports
+        # Block dangerous imports/operations
         dangerous_patterns = [
             r'\bimport\s+os\b',
             r'\bimport\s+subprocess\b',
             r'\bimport\s+sys\b',
-            r'\b__import__\b',
+            r'\bimport\s+shutil\b',
+            r'\bimport\s+socket\b',
             r'\beval\s*\(',
             r'\bexec\s*\(',
             r'\bopen\s*\(',
@@ -291,23 +324,6 @@ class REPLExecutor:
 
         try:
             code = self._sanitize_code(code)
-
-            # Allow 're' module for regex operations
-            if 'import re' in code or 're.' in code:
-                import re as re_module
-                self._env['re'] = re_module
-
-            # Allow 'json' module
-            if 'import json' in code or 'json.' in code:
-                import json as json_module
-                self._env['json'] = json_module
-
-            # Allow 'collections' module
-            if 'import collections' in code or 'collections.' in code or 'Counter' in code or 'defaultdict' in code:
-                import collections as collections_module
-                self._env['collections'] = collections_module
-                self._env['Counter'] = collections_module.Counter
-                self._env['defaultdict'] = collections_module.defaultdict
 
             def run_code():
                 exec(code, self._env)

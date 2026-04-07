@@ -75,15 +75,8 @@ def count_tokens(text: str, model: str = "gpt-4") -> int:
 
 def _get_rlm_system_prompt(context_length: int, max_chunk_chars: int, model: str) -> str:
     """
-    Build the RLM system prompt following the paper (Appendix C).
-
-    Key differences from naive map-reduce:
-    - Iterative: LLM is queried in a loop, can probe context first, then process
-    - Persistent REPL: variables survive across iterations
-    - Only truncated stdout metadata is shown back to the LLM
-    - LLM decides its own chunking strategy based on what it observes
+    Build the RLM system prompt — faithful reproduction of Appendix C (1a) from the paper.
     """
-    # Calculate sub-LLM capacity in chars
     sub_llm_chars = max_chunk_chars
 
     return f"""You are tasked with answering a query with associated context. You can access, transform, and analyze this context interactively in a REPL environment that can recursively query sub-LLMs, which you are strongly encouraged to use as much as possible. You will be queried iteratively until you provide a final answer.
@@ -98,38 +91,62 @@ The REPL environment is initialized with:
 
 You will only be able to see truncated outputs from the REPL environment, so you should use the query LLM function on variables you want to analyze. You will find this function especially useful when you have to analyze the semantics of the context.
 
-Use variables as buffers to build up your final answer.
+Use these variables as buffers to build up your final answer.
 
 Make sure to explicitly look through the entire context in REPL before answering your query. An example strategy is to first look at the context and figure out a chunking strategy, then break up the context into smart chunks, and query an LLM per chunk with a particular question and save the answers to a buffer, then query an LLM with all the buffers to produce your final answer.
 
-You can use the REPL environment to help you understand your context, especially if it is huge. Remember that your sub LLMs are powerful -- they can fit around {sub_llm_chars:,} characters in their context window, so don't be afraid to put a lot of context into them. Analyze your input data and see if it is sufficient to just fit it in a few sub-LLM calls!
+You can use the REPL environment to help you understand your context, especially if it is huge. Remember that your sub LLMs are powerful -- they can fit around {sub_llm_chars:,} characters in their context window, so don't be afraid to put a lot of context into them. For example, a viable strategy is to feed 10 documents per sub-LLM query. Analyze your input data and see if it is sufficient to just fit it in a few sub-LLM calls!
 
-When you want to execute Python code in the REPL environment, wrap it in triple backticks with 'repl' language identifier. For example, say we want to peek at the first 10000 characters of the context:
+When you want to execute Python code in the REPL environment, wrap it in triple backticks with 'repl' language identifier. For example, say we want our recursive model to search for the magic number in the context (assuming the context is a string), and the context is very long, so we want to chunk it:
 ```repl
 chunk = context[:10000]
-print(f"First 10000 characters: {{chunk}}")
+answer = llm_query(f"What is the magic number in the context? Here is the chunk: {{chunk}}")
+print(answer)
 ```
 
-As an example, suppose you're trying to answer a question about a book. You can iteratively chunk the context section by section, query an LLM on that chunk, and track relevant information in a buffer:
+As an example, suppose you're trying to answer a question about a book. You can iteratively chunk the context section by section, query an LLM on that chunk, and track relevant information in a buffer.
 ```repl
-query = "What is the main theme of the book?"
+query = "In Harry Potter and the Sorcerer's Stone, did Gryffindor win the House Cup because they led?"
 chunk_size = MAX_CHUNK_CHARS - 500
 chunks = [context[i:i+chunk_size] for i in range(0, len(context), chunk_size)]
 buffers = []
 for i, chunk in enumerate(chunks):
-    finding = llm_query(f"Extract information relevant to this question: {{query}}\\nText:\\n{{chunk}}")
-    if "not relevant" not in finding.lower():
-        buffers.append(finding)
-    print(f"Processed chunk {{i+1}}/{{len(chunks)}}")
+    if i == len(chunks) - 1:
+        buffer = llm_query(f"You are on the last section of the book. So far you know that: {{buffers}}. Gather from this last section to answer {{query}}. Here is the section: {{chunk}}")
+        print(f"Based on reading iteratively through the book, the answer is: {{buffer}}")
+    else:
+        buffer = llm_query(f"You are iteratively looking through a book, and are on section {{i}} of {{len(chunks)}}. Gather information to help answer {{query}}. Here is the section: {{chunk}}")
+        print(f"After section {{i}} of {{len(chunks)}}, you have tracked: {{buffer}}")
+    buffers.append(buffer)
 ```
 
-Then in a next step, synthesize the findings:
+As another example, when the context isn't that long, a simple but viable strategy is to split into chunks and recursively query an LLM over each chunk:
 ```repl
-final_answer = llm_query(f"Based on these findings, give a short direct answer to: {{query}}\\n\\nFindings:\\n" + "\\n".join(buffers))
-print(final_answer)
+query = "How many jobs did the main character have?"
+chunk_size = MAX_CHUNK_CHARS - 500
+chunks = [context[i:i+chunk_size] for i in range(0, len(context), chunk_size)]
+answers = []
+for i, chunk in enumerate(chunks):
+    answer = llm_query(f"Try to answer the following query: {{query}}. Here is the text:\\n{{chunk}}. Only answer if you are confident in your answer based on the evidence.")
+    answers.append(answer)
+    print(f"I got the answer from chunk {{i}}: {{answer}}")
+final_answer = llm_query(f"Aggregating all the answers per chunk, answer the original query: {{query}}\\n\\nAnswers:\\n" + "\\n".join(answers))
 ```
 
-Then return: FINAL(final_answer)
+As a final example, after analyzing the context and realizing it's separated by Markdown headers, we can maintain state through buffers by chunking the context by headers, and iteratively querying an LLM over it:
+```repl
+import re
+sections = re.split(r'### (.+)', context)
+buffers = []
+for i in range(1, len(sections), 2):
+    header = sections[i]
+    info = sections[i+1]
+    summary = llm_query(f"Summarize this {{header}} section: {{info}}")
+    buffers.append(f"{{header}}: {{summary}}")
+final_answer = llm_query(f"Based on these summaries, answer the original query: {{query}}\\n\\nSummaries:\\n" + "\\n".join(buffers))
+```
+
+In the next step, we can return FINAL_VAR(final_answer).
 
 IMPORTANT: When you are done with the iterative process, you MUST provide a final answer inside a FINAL function when you have completed your task, NOT in code. Do not use these tags unless you have completed your task. You have two options:
 1. Use FINAL(your final answer here) to provide the answer directly
