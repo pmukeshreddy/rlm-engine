@@ -376,26 +376,23 @@ Generate Python code to answer this query. Remember to call FINAL(result) at the
         """
         model = model or settings.default_model
 
-        system_prompt = """You are a Letta child agent helping to process a large document.
+        system_prompt = """You are a sub-LLM helping process a large document. Be BRIEF and DIRECT.
 
-You receive a specific prompt from the parent agent and should provide a direct, helpful answer.
-Focus on the specific task given to you. Be concise but thorough.
+Rules:
+- Give short, factual answers. Aim for under 30 words.
+- If asked to extract info, return ONLY the key facts in 1-2 sentences.
+- If asked to summarize, give 2-3 bullet points max.
+- If content is NOT RELEVANT to the question, respond with exactly: NOT RELEVANT
+- Never add preamble, caveats, or unnecessary explanation.
+- Match the expected answer length — if the question expects a name, give just the name."""
 
-If you're asked to extract information, provide it in a structured format.
-If you're asked to summarize, be comprehensive but concise.
-If you're asked to analyze, provide clear insights.
-If you're asked whether something is relevant, be honest - say NOT RELEVANT if it truly isn't."""
+        user_message = prompt
 
-        user_message = f"""Memory context (from parent agent):
-{json.dumps(parent_memory, indent=2) if parent_memory else "No memory context"}
-
-Task: {prompt}"""
-
-        # Cap max_tokens based on model's context window
+        # Cap max_tokens — keep child responses short
         context_window = MODEL_CONTEXT_WINDOWS.get(model, 16384)
         input_tokens = count_tokens(system_prompt + user_message, model)
-        max_output = min(1024, context_window - input_tokens - 100)
-        max_output = max(max_output, 256)
+        max_output = min(256, context_window - input_tokens - 100)
+        max_output = max(max_output, 64)
 
         return await self.complete(
             messages=[{"role": "user", "content": user_message}],
