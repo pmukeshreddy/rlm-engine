@@ -1,21 +1,42 @@
-"""Letta Agent - The core agent orchestrator."""
+"""Letta Agent - The core RLM (Recursive Language Model) orchestrator.
+
+Implements Algorithm 1 from the RLM paper:
+  1. Initialize REPL with context as variable + llm_query function
+  2. Show LLM only metadata about context (length, preview)
+  3. LLM generates code to probe/process context
+  4. Execute code in persistent REPL
+  5. Feed truncated stdout back to LLM
+  6. Repeat until Final is set
+"""
 import hashlib
 from typing import Optional, Dict, Any, List, Callable
 from datetime import datetime
 from dataclasses import dataclass, field
+
+from app.engine.llm import (
+    LLMClient, LLMResponse, MODEL_CONTEXT_WINDOWS,
+    _get_rlm_system_prompt,
+)
+from app.engine.repl import REPLExecutor, ExecutionResult, ChildCall, StepResult
+from app.engine.metrics import MetricsEvaluator, ExecutionMetrics
+from app.config import settings
+
 
 def _max_chunk_chars_for_model(model: str) -> int:
     """Calculate the max chars per chunk that fits in the model's context window."""
     max_tokens = MODEL_CONTEXT_WINDOWS.get(model, 16384)
     # Reserve: system prompt (~150), memory context (~200), prompt text (~200), output (~1024)
     available_tokens = max_tokens - 1600
-    # Use conservative 3.5 chars per token (real ratio is ~4.75 for narrative text)
+    # Use conservative 3.5 chars per token
     return int(available_tokens * 3.5)
 
-from app.engine.llm import LLMClient, LLMResponse, MODEL_CONTEXT_WINDOWS
-from app.engine.repl import REPLExecutor, ExecutionResult, ChildCall
-from app.engine.metrics import MetricsEvaluator, ExecutionMetrics
-from app.config import settings
+
+# Max stdout chars to show back to the LLM per iteration
+# (paper: "Only constant-size metadata about stdout is appended to M's history")
+STDOUT_TRUNCATE_CHARS = 2000
+
+# Max iterations of the RLM loop before forcing termination
+MAX_RLM_ITERATIONS = 10
 
 
 @dataclass
@@ -25,6 +46,7 @@ class AgentConfig:
     max_chunk_size: int = settings.default_chunk_size
     max_recursion_depth: int = settings.max_recursion_depth
     execution_timeout: int = settings.execution_timeout
+    max_iterations: int = MAX_RLM_ITERATIONS
 
 
 @dataclass
@@ -35,22 +57,25 @@ class ExecutionTrace:
     user_query: str
     context_size: int
     context_hash: str
-    
+
     # Root agent
     generated_code: str
     code_generation_response: Optional[LLMResponse] = None
-    
+
     # Execution
     execution_result: Optional[ExecutionResult] = None
-    
+
     # Aggregates
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_cost_usd: float = 0.0
-    
+
     # Child nodes (for tree visualization)
     child_traces: List[Dict[str, Any]] = field(default_factory=list)
-    
+
+    # RLM loop iterations
+    iterations: List[Dict[str, Any]] = field(default_factory=list)
+
     # Metrics
     metrics: Optional[ExecutionMetrics] = None
 
@@ -59,7 +84,6 @@ class ExecutionTrace:
     completed_at: Optional[datetime] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for API response."""
         return {
             "execution_id": self.execution_id,
             "root_node_id": self.root_node_id,
@@ -79,74 +103,105 @@ class ExecutionTrace:
             "total_output_tokens": self.total_output_tokens,
             "total_cost_usd": self.total_cost_usd,
             "child_traces": self.child_traces,
+            "iterations": self.iterations,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "metrics": self.metrics.to_dict() if self.metrics else None,
         }
 
 
+def _truncate_stdout(stdout: str, max_chars: int = STDOUT_TRUNCATE_CHARS) -> str:
+    """
+    Truncate stdout to fit in the LLM's context window.
+
+    From the paper: "Only (constant-size) metadata about stdout, like a
+    short prefix and length, is appended to M's history for the next iteration."
+    """
+    if not stdout:
+        return "(no output)"
+    if len(stdout) <= max_chars:
+        return stdout
+    # Show beginning and end, with truncation notice
+    half = max_chars // 2
+    return (
+        stdout[:half]
+        + f"\n\n... [truncated {len(stdout) - max_chars} chars] ...\n\n"
+        + stdout[-half:]
+    )
+
+
+def _extract_final_from_text(text: str) -> Optional[str]:
+    """
+    Check if the LLM responded with FINAL() or FINAL_VAR() outside of code.
+
+    The paper allows: "Use FINAL(your final answer here) to provide the answer
+    directly" — not in code, but as text in the response.
+    """
+    import re
+    # Match FINAL(answer) in text (not in code blocks)
+    # Remove code blocks first
+    text_no_code = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
+
+    # Look for FINAL("answer") or FINAL(answer)
+    match = re.search(r'FINAL\((["\']?)(.*?)\1\)\s*$', text_no_code, re.MULTILINE | re.DOTALL)
+    if match:
+        return match.group(2).strip()
+
+    # Look for FINAL_VAR(var_name)
+    match = re.search(r'FINAL_VAR\((\w+)\)', text_no_code)
+    if match:
+        return match.group(1)  # Return var name, will be resolved by caller
+
+    return None
+
+
 class LettaAgent:
     """
-    The main Letta agent that processes large contexts.
-    
-    This agent:
-    1. Receives a user query and large context
-    2. Generates Python code to process the context
-    3. Executes the code in a REPL environment
-    4. Spawns child agents via llm_query() calls
-    5. Returns the final result
+    The main RLM agent implementing Algorithm 1 from the paper.
+
+    Key design principles (from the paper):
+    1. Context lives in the REPL environment, NOT in the LLM's context window
+    2. LLM only sees metadata about context (length, type, preview)
+    3. LLM writes code iteratively, observing truncated stdout between steps
+    4. llm_query() enables recursive sub-LLM calls within code
+    5. Loop continues until FINAL/FINAL_VAR is called
     """
-    
+
     def __init__(
         self,
         llm_client: Optional[LLMClient] = None,
         config: Optional[AgentConfig] = None,
         on_node_update: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
-        """
-        Initialize the Letta agent.
-        
-        Args:
-            llm_client: LLM client for API calls
-            config: Agent configuration
-            on_node_update: Callback for real-time node updates (for streaming to UI)
-        """
         self.llm_client = llm_client or LLMClient()
         self.config = config or AgentConfig()
         self.on_node_update = on_node_update
-        
+
         self._current_trace: Optional[ExecutionTrace] = None
         self._child_sequence = 0
         self._current_depth = 0
-    
+
     def _hash_context(self, context: str) -> str:
-        """Generate a hash of the context for caching/deduplication."""
         return hashlib.sha256(context.encode()).hexdigest()
-    
+
     def _get_context_info(self, context: str) -> Dict[str, Any]:
-        """Get metadata about the context (without the content)."""
         return {
             "size": len(context),
             "hash": self._hash_context(context),
             "type": "text",
             "preview": context[:200] + "..." if len(context) > 200 else context,
         }
-    
+
     async def _child_agent_query(self, prompt: str, memory: Dict[str, Any]) -> LLMResponse:
-        """
-        Execute a child agent query.
-        
-        This is called when the agent code uses llm_query().
-        """
+        """Execute a child agent query (called via llm_query in the REPL)."""
         self._child_sequence += 1
-        
+
         response = await self.llm_client.child_agent_query(
             prompt=prompt,
             parent_memory=memory,
             model=self.config.model,
         )
-        
-        # Track the child call
+
         child_trace = {
             "sequence": self._child_sequence,
             "depth": self._current_depth + 1,
@@ -157,20 +212,19 @@ class LettaAgent:
             "cost_usd": response.cost_usd,
             "model": response.model,
         }
-        
+
         if self._current_trace:
             self._current_trace.child_traces.append(child_trace)
             self._current_trace.total_input_tokens += response.input_tokens
             self._current_trace.total_output_tokens += response.output_tokens
             self._current_trace.total_cost_usd += response.cost_usd
-        
-        # Notify listeners
+
         if self.on_node_update:
             self.on_node_update({
                 "type": "child_complete",
                 "data": child_trace,
             })
-        
+
         return response
 
     async def compute_metrics(
@@ -180,18 +234,6 @@ class LettaAgent:
         memory: Dict[str, Any],
         baseline_execution: Optional[Dict[str, Any]] = None,
     ) -> ExecutionMetrics:
-        """
-        Compute all metrics for a completed execution.
-
-        Args:
-            context: The original full context
-            trace: The completed execution trace
-            memory: Memory state used during execution
-            baseline_execution: First execution on same context (for memory speedup)
-
-        Returns:
-            ExecutionMetrics with compression and memory speedup
-        """
         evaluator = MetricsEvaluator(llm_client=self.llm_client)
         metrics = ExecutionMetrics()
 
@@ -199,7 +241,6 @@ class LettaAgent:
         if not final_result or not trace.execution_result or not trace.execution_result.success:
             return metrics
 
-        # 1. Compression
         child_count = len(trace.child_traces)
         metrics.compression = evaluator.evaluate_compression(
             context=context,
@@ -207,7 +248,6 @@ class LettaAgent:
             child_call_count=child_count,
         )
 
-        # 3. Memory speedup
         execution_time_ms = trace.execution_result.execution_time_ms if trace.execution_result else 0
         metrics.memory_speedup = evaluator.evaluate_memory_speedup(
             current_tokens=trace.total_input_tokens + trace.total_output_tokens,
@@ -228,23 +268,24 @@ class LettaAgent:
         execution_id: Optional[str] = None,
     ) -> ExecutionTrace:
         """
-        Run the agent on a user query with the given context.
-        
-        Args:
-            user_query: The user's question/task
-            context: The full context string (can be very large)
-            memory: Optional persistent memory from previous runs
-            execution_id: Optional ID for tracking (generated if not provided)
-        
-        Returns:
-            ExecutionTrace with complete execution details
+        Run the RLM agent — implements Algorithm 1 from the paper.
+
+        The iterative loop:
+        1. Build system prompt with context metadata (NOT the context itself)
+        2. Send conversation history to LLM
+        3. LLM generates code (wrapped in ```repl blocks)
+        4. Execute code in persistent REPL
+        5. Capture stdout, truncate to constant size
+        6. Append code + truncated stdout to conversation history
+        7. If FINAL was called, return the result
+        8. Otherwise, loop back to step 2
         """
         from uuid import uuid4
-        
+
         execution_id = execution_id or str(uuid4())
         root_node_id = str(uuid4())
         memory = memory or {}
-        
+
         # Initialize trace
         self._current_trace = ExecutionTrace(
             execution_id=execution_id,
@@ -255,11 +296,10 @@ class LettaAgent:
             generated_code="",
             started_at=datetime.utcnow(),
         )
-        
+
         self._child_sequence = 0
         self._current_depth = 0
-        
-        # Notify start
+
         if self.on_node_update:
             self.on_node_update({
                 "type": "execution_start",
@@ -270,141 +310,242 @@ class LettaAgent:
                     "context_size": len(context),
                 }
             })
-        
+
         try:
-            # Step 1: Generate agent code
-            context_info = self._get_context_info(context)
-            
-            if self.on_node_update:
-                self.on_node_update({
-                    "type": "generating_code",
-                    "data": {"context_info": context_info}
-                })
-            
-            code_response = await self.llm_client.generate_agent_code(
-                user_query=user_query,
-                context_info=context_info,
-                memory=memory,
+            max_chunk_chars = _max_chunk_chars_for_model(self.config.model)
+
+            # Build the system prompt (paper's Appendix C)
+            system_prompt = _get_rlm_system_prompt(
+                context_length=len(context),
+                max_chunk_chars=max_chunk_chars,
                 model=self.config.model,
             )
-            
-            self._current_trace.generated_code = code_response.content
-            self._current_trace.code_generation_response = code_response
-            self._current_trace.total_input_tokens += code_response.input_tokens
-            self._current_trace.total_output_tokens += code_response.output_tokens
-            self._current_trace.total_cost_usd += code_response.cost_usd
-            
-            if self.on_node_update:
-                self.on_node_update({
-                    "type": "code_generated",
-                    "data": {
-                        "code": code_response.content,
-                        "tokens": code_response.input_tokens + code_response.output_tokens,
-                        "cost": code_response.cost_usd,
-                    }
-                })
-            
-            # Step 2: Execute the code in REPL
+
+            # Initialize REPL with persistent state
             async def child_query(prompt: str) -> LLMResponse:
                 return await self._child_agent_query(prompt, memory)
-            
+
             repl = REPLExecutor(
                 context=context,
                 memory=memory,
                 llm_query_fn=child_query,
-                max_chunk_chars=_max_chunk_chars_for_model(self.config.model),
+                max_chunk_chars=max_chunk_chars,
             )
-            
-            if self.on_node_update:
-                self.on_node_update({
-                    "type": "executing_code",
-                    "data": {}
+
+            # Initialize conversation history with just the user query
+            # (Algorithm 1: hist <- [Metadata(state)])
+            conversation_history = [
+                {
+                    "role": "user",
+                    "content": f"Query: {user_query}\n\nThe context ({len(context):,} chars) is loaded in the REPL as the variable `context`. Use the REPL to explore and answer the query.",
+                }
+            ]
+
+            all_code_blocks = []
+
+            # === RLM LOOP (Algorithm 1) ===
+            for iteration in range(self.config.max_iterations):
+                if self.on_node_update:
+                    self.on_node_update({
+                        "type": "rlm_iteration",
+                        "data": {"iteration": iteration + 1}
+                    })
+
+                # Step 1: Get code from LLM
+                llm_response = await self.llm_client.rlm_iteration(
+                    conversation_history=conversation_history,
+                    system_prompt=system_prompt,
+                    model=self.config.model,
+                )
+
+                # Track tokens/cost
+                self._current_trace.total_input_tokens += llm_response.input_tokens
+                self._current_trace.total_output_tokens += llm_response.output_tokens
+                self._current_trace.total_cost_usd += llm_response.cost_usd
+
+                llm_output = llm_response.content
+                all_code_blocks.append(llm_output)
+
+                # Check if LLM responded with FINAL() in text (not code)
+                text_final = _extract_final_from_text(llm_output)
+                if text_final and '```' not in llm_output:
+                    # LLM gave final answer directly without code
+                    # If it's a variable name, try to resolve it from REPL env
+                    if text_final in repl._env and not text_final.startswith('"'):
+                        final_value = str(repl._env[text_final])
+                    else:
+                        final_value = text_final
+
+                    self._current_trace.generated_code = "\n\n".join(all_code_blocks)
+                    self._current_trace.execution_result = ExecutionResult(
+                        success=True,
+                        final_result=final_value,
+                        output_log=repl._output_log,
+                        child_calls=[vars(c) for c in repl._child_calls],
+                        execution_time_ms=(datetime.utcnow() - self._current_trace.started_at).total_seconds() * 1000,
+                        memory_changes=repl.get_memory_changes(),
+                    )
+                    self._current_trace.completed_at = datetime.utcnow()
+                    self._current_trace.iterations.append({
+                        "iteration": iteration + 1,
+                        "llm_output": llm_output[:500],
+                        "type": "text_final",
+                        "final_value": final_value[:200],
+                    })
+
+                    if self.on_node_update:
+                        self.on_node_update({
+                            "type": "execution_complete",
+                            "data": {
+                                "success": True,
+                                "final_result": final_value,
+                                "iterations": iteration + 1,
+                                "total_cost": self._current_trace.total_cost_usd,
+                            }
+                        })
+                    return self._current_trace
+
+                # Step 2: Execute code in persistent REPL
+                step_result = await repl.execute_step(
+                    code=llm_output,
+                    timeout=self.config.execution_timeout,
+                )
+
+                # Truncate stdout for feedback (paper: constant-size metadata)
+                truncated_stdout = _truncate_stdout(step_result.stdout)
+
+                # Record iteration
+                iter_record = {
+                    "iteration": iteration + 1,
+                    "code_preview": llm_output[:500],
+                    "stdout_preview": truncated_stdout[:500],
+                    "final_set": step_result.final_set,
+                    "error": step_result.error,
+                    "child_calls": step_result.child_calls_this_step,
+                }
+                self._current_trace.iterations.append(iter_record)
+
+                if self.on_node_update:
+                    self.on_node_update({
+                        "type": "rlm_step_complete",
+                        "data": iter_record,
+                    })
+
+                # Step 3: Check if FINAL was called
+                if step_result.final_set:
+                    self._current_trace.generated_code = "\n\n".join(all_code_blocks)
+                    self._current_trace.execution_result = ExecutionResult(
+                        success=True,
+                        final_result=step_result.final_value,
+                        output_log=repl._output_log,
+                        child_calls=[vars(c) for c in repl._child_calls],
+                        execution_time_ms=(datetime.utcnow() - self._current_trace.started_at).total_seconds() * 1000,
+                        memory_changes=repl.get_memory_changes(),
+                    )
+                    self._current_trace.completed_at = datetime.utcnow()
+
+                    if self.on_node_update:
+                        self.on_node_update({
+                            "type": "execution_complete",
+                            "data": {
+                                "success": True,
+                                "final_result": step_result.final_value,
+                                "iterations": iteration + 1,
+                                "total_cost": self._current_trace.total_cost_usd,
+                            }
+                        })
+                    return self._current_trace
+
+                # Step 4: Append code + stdout to conversation history
+                # (Algorithm 1: hist <- hist || code || Metadata(stdout))
+                conversation_history.append({
+                    "role": "assistant",
+                    "content": llm_output,
                 })
-            
-            result = await repl.execute(
-                code=code_response.content,
-                timeout=self.config.execution_timeout,
+
+                if step_result.error:
+                    feedback = f"REPL Error: {step_result.error}\n\nStdout before error:\n{truncated_stdout}"
+                else:
+                    feedback = f"REPL Output ({len(step_result.stdout)} chars):\n{truncated_stdout}"
+
+                conversation_history.append({
+                    "role": "user",
+                    "content": feedback + "\n\nContinue. Remember to call FINAL(answer) when you have your answer.",
+                })
+
+            # Exhausted iterations without FINAL
+            self._current_trace.generated_code = "\n\n".join(all_code_blocks)
+            self._current_trace.execution_result = ExecutionResult(
+                success=False,
+                error=f"RLM loop exhausted {self.config.max_iterations} iterations without calling FINAL",
+                output_log=repl._output_log,
+                child_calls=[vars(c) for c in repl._child_calls],
+                execution_time_ms=(datetime.utcnow() - self._current_trace.started_at).total_seconds() * 1000,
+                memory_changes=repl.get_memory_changes(),
             )
-            
-            self._current_trace.execution_result = result
             self._current_trace.completed_at = datetime.utcnow()
-            
-            # Final notification
+
             if self.on_node_update:
                 self.on_node_update({
-                    "type": "execution_complete",
-                    "data": {
-                        "success": result.success,
-                        "final_result": result.final_result,
-                        "error": result.error,
-                        "total_cost": self._current_trace.total_cost_usd,
-                    }
+                    "type": "execution_error",
+                    "data": {"error": "Max iterations reached"}
                 })
-            
+
             return self._current_trace
-            
+
         except Exception as e:
             self._current_trace.completed_at = datetime.utcnow()
             self._current_trace.execution_result = ExecutionResult(
                 success=False,
                 error=str(e),
             )
-            
+
             if self.on_node_update:
                 self.on_node_update({
                     "type": "execution_error",
                     "data": {"error": str(e)}
                 })
-            
+
             return self._current_trace
 
 
 class RecursiveLettaAgent(LettaAgent):
     """
-    Extended Letta agent that supports recursive child agents.
-    
-    Child agents can also spawn their own children (up to max depth),
-    enabling more complex processing patterns.
+    Extended agent that supports recursive child agents.
+    Child agents can also spawn their own children (up to max depth).
     """
-    
+
     async def _child_agent_query(self, prompt: str, memory: Dict[str, Any]) -> LLMResponse:
-        """Execute a child query that may recursively spawn more children."""
         self._child_sequence += 1
         new_depth = self._current_depth + 1
-        
+
         if new_depth >= self.config.max_recursion_depth:
-            # At max depth, just do a simple completion
             return await self.llm_client.child_agent_query(
                 prompt=prompt,
                 parent_memory=memory,
                 model=self.config.model,
             )
-        
-        # Check if prompt is large enough to warrant recursive processing
+
         if len(prompt) > self.config.max_chunk_size:
-            # Create a child agent for recursive processing
             child_agent = RecursiveLettaAgent(
                 llm_client=self.llm_client,
                 config=self.config,
                 on_node_update=self.on_node_update,
             )
             child_agent._current_depth = new_depth
-            
-            # Run child agent with the prompt as context
+
             child_trace = await child_agent.run(
                 user_query="Process and respond to this request",
                 context=prompt,
                 memory=memory,
             )
-            
-            # Track in parent trace
+
             if self._current_trace:
                 self._current_trace.child_traces.append(child_trace.to_dict())
                 self._current_trace.total_input_tokens += child_trace.total_input_tokens
                 self._current_trace.total_output_tokens += child_trace.total_output_tokens
                 self._current_trace.total_cost_usd += child_trace.total_cost_usd
-            
-            # Return the result as an LLMResponse
+
             return LLMResponse(
                 content=child_trace.execution_result.final_result if child_trace.execution_result and child_trace.execution_result.success else f"Error: {child_trace.execution_result.error if child_trace.execution_result else 'Unknown'}",
                 model=self.config.model,
@@ -413,5 +554,4 @@ class RecursiveLettaAgent(LettaAgent):
                 cost_usd=child_trace.total_cost_usd,
             )
         else:
-            # Small enough, just do a direct call
             return await super()._child_agent_query(prompt, memory)

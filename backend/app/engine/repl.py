@@ -1,4 +1,9 @@
-"""REPL Executor for running agent-generated code."""
+"""REPL Executor for running agent-generated code.
+
+Implements the persistent REPL environment from the RLM paper (Algorithm 1).
+The REPL maintains state across multiple code executions, allowing the LLM
+to iteratively probe, analyze, and process the context.
+"""
 import asyncio
 import traceback
 from typing import Any, Dict, Optional, Callable, List
@@ -17,6 +22,16 @@ class ExecutionResult:
     child_calls: List[Dict[str, Any]] = field(default_factory=list)
     execution_time_ms: float = 0
     memory_changes: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class StepResult:
+    """Result of a single REPL step (one code execution in the iterative loop)."""
+    stdout: str  # Captured print output
+    final_set: bool  # Whether Final was set this step
+    final_value: Optional[str] = None  # The value of Final if set
+    error: Optional[str] = None  # Error message if code failed
+    child_calls_this_step: int = 0  # Number of llm_query calls in this step
 
 
 @dataclass
@@ -39,15 +54,16 @@ class FinalResultException(Exception):
 
 class REPLExecutor:
     """
-    Executes agent-generated Python code in a sandboxed environment.
-    
-    Provides:
-    - context: The large context string
-    - llm_query(prompt): Function to spawn child agents
-    - FINAL(result): Function to return the final result
-    - memory: Read-only dict of persistent memory
+    Persistent REPL environment for RLM execution.
+
+    Implements the REPL from Algorithm 1 of the RLM paper:
+    - Context is loaded as a variable (never in the LLM's context window)
+    - State persists across multiple code executions (iterative loop)
+    - llm_query() spawns sub-LLM calls
+    - FINAL() / FINAL_VAR() signals completion
+    - print() captures stdout for feedback to the root LLM
     """
-    
+
     def __init__(
         self,
         context: str,
@@ -56,100 +72,131 @@ class REPLExecutor:
         on_child_call: Optional[Callable[[ChildCall], None]] = None,
         max_chunk_chars: int = 50000,
     ):
-        """
-        Initialize the REPL executor.
-
-        Args:
-            context: The full context string
-            memory: Dictionary of persistent memory
-            llm_query_fn: Async function to call child agents
-            on_child_call: Callback when a child call completes
-            max_chunk_chars: Maximum characters per chunk for the model's context window
-        """
         self.context = context
-        self.memory = memory.copy()  # Working copy of memory
-        self._initial_memory = memory.copy()  # Original state for diff
+        self.memory = memory.copy()
+        self._initial_memory = memory.copy()
         self._llm_query_fn = llm_query_fn
         self._on_child_call = on_child_call
         self._max_chunk_chars = max_chunk_chars
-        
+
         self._final_result: Optional[str] = None
+        self._final_set: bool = False
         self._child_calls: List[ChildCall] = []
         self._output_log: List[str] = []
+        self._stdout_buffer: List[str] = []
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._memory_changes: Dict[str, Any] = {}  # Track what changed
-    
+        self._memory_changes: Dict[str, Any] = {}
+
+        # Persistent environment that survives across iterations
+        self._env: Dict[str, Any] = self._create_base_env()
+
+    def _create_base_env(self) -> Dict[str, Any]:
+        """Create the persistent REPL environment with all available functions."""
+        return {
+            'context': self.context,
+            'memory': self.memory,
+            'MAX_CHUNK_CHARS': self._max_chunk_chars,
+            'llm_query': self._create_llm_query_fn(),
+            'FINAL': self._create_final_fn(),
+            'FINAL_VAR': self._create_final_var_fn(),
+            'set_memory': self._create_set_memory_fn(),
+            'get_memory': self._create_get_memory_fn(),
+            'print': self._create_print_fn(),
+            # Safe builtins
+            'len': len,
+            'str': str,
+            'int': int,
+            'float': float,
+            'bool': bool,
+            'list': list,
+            'dict': dict,
+            'tuple': tuple,
+            'set': set,
+            'range': range,
+            'enumerate': enumerate,
+            'zip': zip,
+            'map': map,
+            'filter': filter,
+            'sorted': sorted,
+            'reversed': reversed,
+            'sum': sum,
+            'min': min,
+            'max': max,
+            'abs': abs,
+            'round': round,
+            'isinstance': isinstance,
+            'type': type,
+            'hasattr': hasattr,
+            'getattr': getattr,
+            'setattr': setattr,
+            'any': any,
+            'all': all,
+            'chr': chr,
+            'ord': ord,
+            'repr': repr,
+            'True': True,
+            'False': False,
+            'None': None,
+            '__builtins__': {},
+        }
+
     def _create_final_fn(self):
-        """Create the FINAL function for the REPL environment."""
+        """Create the FINAL function - signals completion with a direct value."""
         def final(result: Any) -> None:
-            """Signal completion with a final result."""
             result_str = str(result) if not isinstance(result, str) else result
+            self._final_result = result_str
+            self._final_set = True
             raise FinalResultException(result_str)
         return final
-    
+
+    def _create_final_var_fn(self):
+        """Create the FINAL_VAR function - signals completion with a variable from the REPL env."""
+        def final_var(var_name: Any) -> None:
+            # If passed a string, look up the variable name in the environment
+            if isinstance(var_name, str) and var_name in self._env:
+                result = str(self._env[var_name])
+            else:
+                # If passed the variable directly (not as a string), use its value
+                result = str(var_name)
+            self._final_result = result
+            self._final_set = True
+            raise FinalResultException(result)
+        return final_var
+
     def _create_set_memory_fn(self):
-        """Create the set_memory function for persisting data."""
         def set_memory(key: str, value: Any) -> None:
-            """
-            Store a value in persistent memory.
-            
-            Args:
-                key: The key to store under
-                value: The value to store (must be JSON-serializable)
-            """
             self.memory[key] = value
             self._memory_changes[key] = value
-            self._output_log.append(f"[set_memory] {key} = {str(value)[:100]}")
+            self._stdout_buffer.append(f"[memory] set '{key}'")
         return set_memory
-    
+
     def _create_get_memory_fn(self):
-        """Create the get_memory function for reading data."""
         def get_memory(key: str, default: Any = None) -> Any:
-            """
-            Get a value from persistent memory.
-            
-            Args:
-                key: The key to retrieve
-                default: Default value if key doesn't exist
-            
-            Returns:
-                The stored value or default
-            """
             return self.memory.get(key, default)
         return get_memory
-    
+
     def get_memory_changes(self) -> Dict[str, Any]:
-        """Get all memory changes made during execution."""
         return self._memory_changes.copy()
-    
+
     def _create_llm_query_fn(self):
-        """Create the llm_query function for the REPL environment."""
+        """Create the llm_query function for sub-LLM calls."""
         def llm_query(prompt: str) -> str:
-            """
-            Spawn a child agent to answer a question.
-            
-            This runs synchronously from the agent's perspective,
-            but internally uses async to call the LLM.
-            """
             if self._loop is None:
                 raise RuntimeError("No event loop available for llm_query")
-            
+
             start_time = datetime.utcnow()
-            
-            # Run the async function in the event loop
+
             future = asyncio.run_coroutine_threadsafe(
                 self._llm_query_fn(prompt),
                 self._loop
             )
-            
+
             try:
-                # Wait for the result (with timeout)
-                response = future.result(timeout=120)  # 2 minute timeout per call
-                
+                response = future.result(timeout=120)
+
                 end_time = datetime.utcnow()
                 execution_time_ms = (end_time - start_time).total_seconds() * 1000
-                
-                # Record the child call
+
                 child_call = ChildCall(
                     prompt=prompt[:1000] + "..." if len(prompt) > 1000 else prompt,
                     result=response.content[:1000] + "..." if len(response.content) > 1000 else response.content,
@@ -159,42 +206,50 @@ class REPLExecutor:
                     execution_time_ms=execution_time_ms,
                 )
                 self._child_calls.append(child_call)
-                
+
                 if self._on_child_call:
                     self._on_child_call(child_call)
-                
+
                 self._output_log.append(f"[llm_query] Tokens: {response.input_tokens}+{response.output_tokens}, Cost: ${response.cost_usd:.4f}")
-                
+
                 return response.content
-                
+
             except asyncio.TimeoutError:
                 self._output_log.append(f"[llm_query] TIMEOUT after 120s")
                 raise TimeoutError("llm_query timed out after 120 seconds")
             except Exception as e:
                 self._output_log.append(f"[llm_query] ERROR: {str(e)}")
                 raise
-        
+
         return llm_query
-    
+
     def _create_print_fn(self):
-        """Create a print function that logs output."""
+        """Create a print function that captures to stdout buffer."""
         def custom_print(*args, **kwargs):
             message = " ".join(str(arg) for arg in args)
+            self._stdout_buffer.append(message)
             self._output_log.append(f"[print] {message}")
         return custom_print
-    
+
     def _sanitize_code(self, code: str) -> str:
-        """
-        Sanitize the code for execution.
-        
-        Removes markdown code blocks and dangerous constructs.
-        """
-        # Remove markdown code blocks
-        code = re.sub(r'^```python\s*\n?', '', code.strip())
-        code = re.sub(r'^```\s*\n?', '', code.strip())
-        code = re.sub(r'\n?```\s*$', '', code.strip())
-        
-        # Basic safety checks (not comprehensive, just catches obvious issues)
+        """Extract and sanitize code from LLM output."""
+        # Extract code from ```repl or ```python blocks
+        repl_match = re.search(r'```(?:repl|python)\s*\n(.*?)```', code, re.DOTALL)
+        if repl_match:
+            code = repl_match.group(1)
+        else:
+            # Try plain ``` blocks
+            plain_match = re.search(r'```\s*\n(.*?)```', code, re.DOTALL)
+            if plain_match:
+                code = plain_match.group(1)
+            else:
+                # Remove any remaining markdown
+                code = re.sub(r'^```python\s*\n?', '', code.strip())
+                code = re.sub(r'^```\s*\n?', '', code.strip())
+                code = re.sub(r'\n?```\s*$', '', code.strip())
+
+        # Allow 're' module import (needed for regex-based filtering)
+        # Block dangerous imports
         dangerous_patterns = [
             r'\bimport\s+os\b',
             r'\bimport\s+subprocess\b',
@@ -206,174 +261,148 @@ class REPLExecutor:
             r'\bfile\s*\(',
             r'\bcompile\s*\(',
         ]
-        
+
         for pattern in dangerous_patterns:
             if re.search(pattern, code):
                 raise ValueError(f"Potentially dangerous code pattern detected: {pattern}")
-        
+
         return code
-    
-    async def execute(self, code: str, timeout: int = 300) -> ExecutionResult:
+
+    async def execute_step(self, code: str, timeout: int = 120) -> StepResult:
         """
-        Execute the agent-generated code.
-        
+        Execute one step of code in the persistent REPL.
+
+        This is one iteration of the RLM loop (Algorithm 1):
+        - Code runs in the persistent environment
+        - Variables from previous steps are available
+        - stdout is captured and returned
+        - If FINAL/FINAL_VAR is called, final_set=True
+
         Args:
-            code: Python code to execute
-            timeout: Maximum execution time in seconds
-        
+            code: Python code to execute (may contain ```repl blocks)
+            timeout: Timeout for this step in seconds
+
         Returns:
-            ExecutionResult with success/failure and results
+            StepResult with stdout, final status, and any errors
         """
-        start_time = datetime.utcnow()
         self._loop = asyncio.get_event_loop()
-        
+        self._stdout_buffer = []  # Reset stdout for this step
+        child_calls_before = len(self._child_calls)
+
         try:
-            # Sanitize code
             code = self._sanitize_code(code)
-            
-            # Create the execution environment
-            env = {
-                'context': self.context,
-                'memory': self.memory,
-                'MAX_CHUNK_CHARS': self._max_chunk_chars,
-                'llm_query': self._create_llm_query_fn(),
-                'FINAL': self._create_final_fn(),
-                'set_memory': self._create_set_memory_fn(),
-                'get_memory': self._create_get_memory_fn(),
-                'print': self._create_print_fn(),
-                'len': len,
-                'str': str,
-                'int': int,
-                'float': float,
-                'bool': bool,
-                'list': list,
-                'dict': dict,
-                'tuple': tuple,
-                'set': set,
-                'range': range,
-                'enumerate': enumerate,
-                'zip': zip,
-                'map': map,
-                'filter': filter,
-                'sorted': sorted,
-                'reversed': reversed,
-                'sum': sum,
-                'min': min,
-                'max': max,
-                'abs': abs,
-                'round': round,
-                'isinstance': isinstance,
-                'type': type,
-                'hasattr': hasattr,
-                'getattr': getattr,
-                'setattr': setattr,
-                '__builtins__': {},  # Restrict builtins
-            }
-            
-            # Execute in a thread to allow async calls within sync exec
+
+            # Allow 're' module for regex operations
+            if 'import re' in code or 're.' in code:
+                import re as re_module
+                self._env['re'] = re_module
+
+            # Allow 'json' module
+            if 'import json' in code or 'json.' in code:
+                import json as json_module
+                self._env['json'] = json_module
+
+            # Allow 'collections' module
+            if 'import collections' in code or 'collections.' in code or 'Counter' in code or 'defaultdict' in code:
+                import collections as collections_module
+                self._env['collections'] = collections_module
+                self._env['Counter'] = collections_module.Counter
+                self._env['defaultdict'] = collections_module.defaultdict
+
             def run_code():
-                exec(code, env)
-            
-            # Run with timeout
+                exec(code, self._env)
+
             loop = asyncio.get_event_loop()
             await asyncio.wait_for(
                 loop.run_in_executor(None, run_code),
                 timeout=timeout
             )
-            
-            # If we get here without FINAL being called, that's an error
-            end_time = datetime.utcnow()
+
+            # Code completed without FINAL — normal for iterative RLM
+            stdout = "\n".join(self._stdout_buffer)
+            child_calls_this_step = len(self._child_calls) - child_calls_before
+
+            return StepResult(
+                stdout=stdout,
+                final_set=False,
+                child_calls_this_step=child_calls_this_step,
+            )
+
+        except FinalResultException as e:
+            stdout = "\n".join(self._stdout_buffer)
+            child_calls_this_step = len(self._child_calls) - child_calls_before
+
+            return StepResult(
+                stdout=stdout,
+                final_set=True,
+                final_value=e.result,
+                child_calls_this_step=child_calls_this_step,
+            )
+
+        except asyncio.TimeoutError:
+            stdout = "\n".join(self._stdout_buffer)
+            return StepResult(
+                stdout=stdout,
+                final_set=False,
+                error=f"Code execution timed out after {timeout} seconds",
+            )
+
+        except Exception as e:
+            stdout = "\n".join(self._stdout_buffer)
+            return StepResult(
+                stdout=stdout,
+                final_set=False,
+                error=f"{type(e).__name__}: {str(e)}",
+            )
+
+    def get_execution_summary(self) -> ExecutionResult:
+        """Get the final execution result after all iterations complete."""
+        return ExecutionResult(
+            success=self._final_set,
+            final_result=self._final_result,
+            error=None if self._final_set else "RLM loop ended without setting Final",
+            output_log=self._output_log,
+            child_calls=[vars(c) for c in self._child_calls],
+            execution_time_ms=0,  # Set by caller
+            memory_changes=self._memory_changes,
+        )
+
+    # Legacy single-shot execute for backward compatibility
+    async def execute(self, code: str, timeout: int = 300) -> ExecutionResult:
+        """
+        Execute code in a single shot (legacy interface).
+        For the iterative RLM loop, use execute_step() instead.
+        """
+        start_time = datetime.utcnow()
+        step_result = await self.execute_step(code, timeout)
+
+        end_time = datetime.utcnow()
+        exec_time = (end_time - start_time).total_seconds() * 1000
+
+        if step_result.final_set:
+            return ExecutionResult(
+                success=True,
+                final_result=step_result.final_value,
+                output_log=self._output_log,
+                child_calls=[vars(c) for c in self._child_calls],
+                execution_time_ms=exec_time,
+                memory_changes=self._memory_changes,
+            )
+        elif step_result.error:
+            return ExecutionResult(
+                success=False,
+                error=step_result.error,
+                output_log=self._output_log,
+                child_calls=[vars(c) for c in self._child_calls],
+                execution_time_ms=exec_time,
+                memory_changes=self._memory_changes,
+            )
+        else:
             return ExecutionResult(
                 success=False,
                 error="Code completed without calling FINAL(result)",
                 output_log=self._output_log,
                 child_calls=[vars(c) for c in self._child_calls],
-                execution_time_ms=(end_time - start_time).total_seconds() * 1000,
+                execution_time_ms=exec_time,
                 memory_changes=self._memory_changes,
             )
-            
-        except FinalResultException as e:
-            # FINAL was called - this is success!
-            end_time = datetime.utcnow()
-            return ExecutionResult(
-                success=True,
-                final_result=e.result,
-                output_log=self._output_log,
-                child_calls=[vars(c) for c in self._child_calls],
-                execution_time_ms=(end_time - start_time).total_seconds() * 1000,
-                memory_changes=self._memory_changes,
-            )
-            
-        except asyncio.TimeoutError:
-            end_time = datetime.utcnow()
-            return ExecutionResult(
-                success=False,
-                error=f"Execution timed out after {timeout} seconds",
-                output_log=self._output_log,
-                child_calls=[vars(c) for c in self._child_calls],
-                execution_time_ms=(end_time - start_time).total_seconds() * 1000,
-                memory_changes=self._memory_changes,
-            )
-            
-        except Exception as e:
-            end_time = datetime.utcnow()
-            return ExecutionResult(
-                success=False,
-                error=f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}",
-                output_log=self._output_log,
-                child_calls=[vars(c) for c in self._child_calls],
-                execution_time_ms=(end_time - start_time).total_seconds() * 1000,
-                memory_changes=self._memory_changes,
-            )
-
-
-class AsyncREPLExecutor(REPLExecutor):
-    """
-    Async-native REPL executor that uses native async for llm_query.
-    
-    This version allows true concurrent child agent calls when the
-    agent code uses asyncio patterns.
-    """
-    
-    def _create_llm_query_fn(self):
-        """Create an async llm_query function."""
-        async def llm_query_async(prompt: str) -> str:
-            """Spawn a child agent asynchronously."""
-            start_time = datetime.utcnow()
-            
-            try:
-                response = await self._llm_query_fn(prompt)
-                
-                end_time = datetime.utcnow()
-                execution_time_ms = (end_time - start_time).total_seconds() * 1000
-                
-                child_call = ChildCall(
-                    prompt=prompt[:1000] + "..." if len(prompt) > 1000 else prompt,
-                    result=response.content[:1000] + "..." if len(response.content) > 1000 else response.content,
-                    input_tokens=response.input_tokens,
-                    output_tokens=response.output_tokens,
-                    cost_usd=response.cost_usd,
-                    execution_time_ms=execution_time_ms,
-                )
-                self._child_calls.append(child_call)
-                
-                if self._on_child_call:
-                    self._on_child_call(child_call)
-                
-                return response.content
-                
-            except Exception as e:
-                self._output_log.append(f"[llm_query] ERROR: {str(e)}")
-                raise
-        
-        # Return sync wrapper for use in exec()
-        def llm_query(prompt: str) -> str:
-            if self._loop is None:
-                raise RuntimeError("No event loop")
-            future = asyncio.run_coroutine_threadsafe(
-                llm_query_async(prompt),
-                self._loop
-            )
-            return future.result(timeout=120)
-        
-        return llm_query

@@ -100,6 +100,7 @@ def print_comparison_table(results: Dict[str, Any]):
 
     # RLM-specific
     print(f"  {'avg_compression_ratio':<28} {rlm.get('avg_compression', 0):>12.1f}x {'N/A':>12}  {'':>8}")
+    print(f"  {'avg_rlm_iterations':<28} {rlm.get('avg_iterations', 0):>12.1f}  {'N/A':>12}  {'':>8}")
     print(f"  {'avg_child_calls':<28} {rlm.get('avg_child_calls', 0):>12.1f}  {'N/A':>12}  {'':>8}")
     print(f"  {'context_truncated (direct)':<28} {'N/A':>12}  {direct.get('truncated_pct', 0):>11.0f}%  {'':>8}")
 
@@ -137,6 +138,7 @@ def aggregate_results(per_sample: List[Dict[str, Any]], approach: str) -> Dict[s
     if approach == "rlm":
         agg["avg_compression"] = avg("compression_ratio")
         agg["avg_child_calls"] = avg("child_calls")
+        agg["avg_iterations"] = avg("iterations")
     elif approach == "direct":
         truncated = sum(1 for s in per_sample if s.get(approach, {}).get("truncated", False))
         agg["truncated_pct"] = (truncated / n) * 100
@@ -178,44 +180,40 @@ async def run_benchmark(
         # Debug: show reference answers
         print(f"    [REF] {sample.reference_answers}")
 
-        # --- RLM Engine ---
+        # --- RLM Engine (Iterative REPL Loop - Algorithm 1) ---
         from app.engine.agent import _max_chunk_chars_for_model
         max_cc = _max_chunk_chars_for_model(model)
-        num_chunks = (len(sample.context) // max_cc) + 1
-        print(f"    [CHUNK INFO] MAX_CHUNK_CHARS={max_cc}, context={len(sample.context)}, est_chunks={num_chunks}")
+        print(f"    [RLM INFO] MAX_CHUNK_CHARS={max_cc}, context={len(sample.context)} chars")
         print_progress(i, len(samples), sample.id, "RLM Engine")
         try:
             start = time.perf_counter()
             trace = await agent.run(
-                user_query=f"{sample.question}\n\nIMPORTANT: Give a short, direct answer in 1-2 sentences max. No lengthy explanations.",
+                user_query=f"{sample.question}\n\nIMPORTANT: Give a short, direct answer in 1-2 sentences max.",
                 context=sample.context,
                 memory={},
             )
             rlm_latency = (time.perf_counter() - start) * 1000
 
+            n_iterations = len(trace.iterations)
             rlm_answer = ""
             if trace.execution_result and trace.execution_result.success:
                 rlm_answer = trace.execution_result.final_result or ""
+                print(f"    [RLM OK] {n_iterations} iterations, {len(trace.child_traces)} sub-calls")
             else:
-                # Debug: show why RLM failed
                 err = trace.execution_result.error if trace.execution_result else "No execution result"
-                print(f"    [RLM FAIL] success={trace.execution_result.success if trace.execution_result else None}")
-                print(f"    [RLM ERROR] {err[:500]}")
+                print(f"    [RLM FAIL] {n_iterations} iterations | {err[:300]}")
                 if trace.execution_result and trace.execution_result.output_log:
-                    for log in trace.execution_result.output_log[-5:]:
+                    for log in trace.execution_result.output_log[-3:]:
                         print(f"    [RLM LOG] {log[:200]}")
-                print(f"    [RLM CODE] {trace.generated_code[:500]}")
 
             # Debug: show RLM answer vs reference
             rlm_words = len(rlm_answer.split()) if rlm_answer else 0
             ref_words = len(sample.reference_answers[0].split()) if sample.reference_answers else 0
-            print(f"    [RLM ANS] ({rlm_words} words vs ref {ref_words} words): {rlm_answer[:200]}{'...' if len(rlm_answer) > 200 else ''}")
+            print(f"    [RLM ANS] ({rlm_words}w vs ref {ref_words}w): {rlm_answer[:200]}{'...' if len(rlm_answer) > 200 else ''}")
 
-            # Score against references (includes F1, ROUGE, BERTScore, length_ratio)
             rlm_scores = score_prediction(rlm_answer, sample.reference_answers)
             print(f"    [RLM SCORES] f1={rlm_scores['f1']:.4f} bertscore={rlm_scores['bertscore']:.4f} len_ratio={rlm_scores['length_ratio']:.1f}")
 
-            # Compression (char + token based)
             comp_result = None
             if rlm_answer:
                 comp_result = evaluator.evaluate_compression(
@@ -231,6 +229,7 @@ async def run_benchmark(
                 "cost_usd": trace.total_cost_usd,
                 "latency_ms": rlm_latency,
                 "child_calls": len(trace.child_traces),
+                "iterations": n_iterations,
                 "compression_ratio": comp_result.compression_ratio if comp_result else 0,
                 "token_compression_ratio": comp_result.token_compression_ratio if comp_result else 0,
                 "success": trace.execution_result.success if trace.execution_result else False,
