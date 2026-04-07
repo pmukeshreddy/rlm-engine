@@ -20,9 +20,8 @@ class LLMResponse:
 
 
 # Context window sizes in tokens
-# NOTE: gpt-4.1-nano's real window is 1M tokens, but we cap it at 16K
-# to force chunking so RLM's advantage over Direct is visible on
-# datasets like NarrativeQA (~100K tokens avg).
+# gpt-5-mini real window is 400K but capped at 16K to force chunking
+# so RLM advantage is visible on NarrativeQA (~100K token avg contexts).
 MODEL_CONTEXT_WINDOWS = {
     "gpt-4": 8192,
     "gpt-3.5-turbo": 16384,
@@ -32,6 +31,7 @@ MODEL_CONTEXT_WINDOWS = {
     "gpt-4o-mini": 128000,
     "gpt-4.1-nano": 16384,
     "gpt-4.1-mini": 16384,
+    "gpt-5-mini": 16384,
     "claude-3-opus-20240229": 200000,
     "claude-3-sonnet-20240229": 200000,
     "claude-3-haiku-20240307": 200000,
@@ -48,6 +48,7 @@ MODEL_PRICING = {
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-4.1-nano": (0.05, 0.20),
     "gpt-4.1-mini": (0.10, 0.40),
+    "gpt-5-mini": (0.25, 2.00),
     "gpt-4": (30.0, 60.0),
     "gpt-3.5-turbo": (0.5, 1.5),
     # Anthropic
@@ -283,13 +284,7 @@ class LLMClient:
         model: Optional[str] = None,
     ) -> LLMResponse:
         """
-        One iteration of the RLM loop.
-
-        Sends the full conversation history (system prompt + user query +
-        previous code + stdout observations) and gets the next code block
-        or final answer from the LLM.
-
-        This is the core of Algorithm 1: hist -> LLM_M(hist) -> code
+        One iteration of the RLM loop (Algorithm 1: code <- LLM_M(hist)).
         """
         model = model or settings.default_model
 
@@ -315,48 +310,20 @@ class LLMClient:
         memory: Dict[str, Any],
         model: Optional[str] = None,
     ) -> LLMResponse:
-        """
-        Legacy single-shot code generation (used by old interface).
-        The new iterative RLM loop uses rlm_iteration() instead.
-        """
+        """Legacy single-shot code generation (used by old interface)."""
         system_prompt = """You are a Letta agent that processes large contexts by writing Python code.
 
 You have access to these variables and functions in your REPL environment:
-- `context`: The full context string (may be very large, 500K+ characters)
-- `len(context)`: Get the size of the context
-- `context[start:end]`: Slice the context to get a portion
-- `llm_query(prompt: str) -> str`: Spawn a child agent to answer a question. The prompt can include data from context.
-- `FINAL(result: str)`: Call this with your final answer when done. YOU MUST call this to complete.
-- `memory`: A dict of persistent memory from previous runs (read-only direct access)
-- `get_memory(key: str, default=None) -> Any`: Get a value from persistent memory
-- `set_memory(key: str, value: Any)`: Store a value in persistent memory for future runs
-- `MAX_CHUNK_CHARS`: Maximum characters per chunk that fits in the model's context window. ALWAYS use this for chunk sizing.
+- `context`: The full context string (may be very large)
+- `llm_query(prompt: str) -> str`: Spawn a child agent to answer a question.
+- `FINAL(result: str)`: Call this with your final answer when done.
+- `MAX_CHUNK_CHARS`: Maximum characters per chunk for the model's context window.
 
-IMPORTANT RULES:
-1. NEVER try to include the full context in a prompt - it's too large!
-2. Use chunking: split context into smaller pieces and process each with llm_query()
-3. CRITICAL: Each llm_query() prompt MUST be under MAX_CHUNK_CHARS characters total (including your instructions + the chunk text). Use MAX_CHUNK_CHARS to size your chunks.
-4. For QA tasks, scan chunks for relevant sections, then answer from those specific sections
-5. For summarization tasks, process chunks and aggregate results
-6. Always call FINAL(result) at the end with your answer
-7. FINAL(result) MUST be a short, direct answer -- typically 1-2 sentences or a few words. NEVER pass long text to FINAL(). Always use llm_query() to distill findings into a brief answer first.
-8. Keep your code simple and readable
-9. Handle errors gracefully
-10. Use set_memory() to persist useful information for future queries
+Write Python code to answer the user's query. Output ONLY the code."""
 
-Write Python code to answer the user's query. Output ONLY the code, no explanations."""
-
-        user_message = f"""Context Information:
-- Size: {context_info.get('size', 'unknown')} characters
-- Type: {context_info.get('type', 'text')}
-- Hash: {context_info.get('hash', 'none')[:16] if context_info.get('hash') else 'none'}...
-
-Memory from previous runs:
-{json.dumps(memory, indent=2) if memory else "No previous memory"}
-
+        user_message = f"""Context: {context_info.get('size', 'unknown')} characters
 User Query: {user_query}
-
-Generate Python code to answer this query. Remember to call FINAL(result) at the end."""
+Generate Python code. Call FINAL(result) at the end."""
 
         return await self.complete(
             messages=[{"role": "user", "content": user_message}],
@@ -373,30 +340,26 @@ Generate Python code to answer this query. Remember to call FINAL(result) at the
     ) -> LLMResponse:
         """
         Execute a child agent query (called via llm_query in the REPL).
+
+        The child is a simple QA agent — it receives a chunk of text and
+        a question, and returns a direct answer. No complex instructions.
         """
         model = model or settings.default_model
 
-        system_prompt = """You are a sub-LLM helping process a large document. Be BRIEF and DIRECT.
-
-Rules:
-- Give short, factual answers. Aim for 1-2 sentences max.
-- If asked to extract info, return ONLY the key facts found.
-- If asked to answer a question, give just the answer — no preamble or caveats.
-- Match the expected answer length — if the question expects a name, give just the name.
-- If asked to aggregate or synthesize, produce a concise final answer."""
+        system_prompt = """You are a helpful assistant that answers questions about provided text. Give short, direct answers in 1-2 sentences. If the text doesn't contain relevant information, say so briefly."""
 
         user_message = prompt
 
-        # Cap max_tokens for child responses
+        # Cap max_tokens based on model's context window
         context_window = MODEL_CONTEXT_WINDOWS.get(model, 16384)
         input_tokens = count_tokens(system_prompt + user_message, model)
-        max_output = min(512, context_window - input_tokens - 100)
+        max_output = min(1024, context_window - input_tokens - 100)
         max_output = max(max_output, 128)
 
         return await self.complete(
             messages=[{"role": "user", "content": user_message}],
             model=model,
             system_prompt=system_prompt,
-            temperature=0.5,
+            temperature=0.3,
             max_tokens=max_output,
         )
