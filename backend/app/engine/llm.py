@@ -217,8 +217,8 @@ class LLMClient:
                 messages, model, temperature, max_tokens, system_prompt
             )
 
-    def _uses_max_completion_tokens(self, model: str) -> bool:
-        """Newer OpenAI models (gpt-5+) use max_completion_tokens instead of max_tokens."""
+    def _is_new_openai_model(self, model: str) -> bool:
+        """Newer OpenAI models (gpt-5+, gpt-4.1+) have different API requirements."""
         return model.startswith("gpt-5") or model.startswith("gpt-4.1")
 
     async def _complete_openai(
@@ -235,12 +235,13 @@ class LLMClient:
         kwargs = {
             "model": model,
             "messages": messages,
-            "temperature": temperature,
         }
-        if self._uses_max_completion_tokens(model):
+        if self._is_new_openai_model(model):
+            # GPT-5/4.1 models: max_completion_tokens, temperature=1 only
             kwargs["max_completion_tokens"] = max_tokens
         else:
             kwargs["max_tokens"] = max_tokens
+            kwargs["temperature"] = temperature
 
         response = await self.openai.chat.completions.create(**kwargs)
 
