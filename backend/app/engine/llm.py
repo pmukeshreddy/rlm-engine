@@ -85,19 +85,17 @@ def _get_rlm_system_prompt(context_length: int, max_chunk_chars: int, model: str
     """
     Build the RLM system prompt — faithful reproduction of Appendix C (1a) from the paper.
     """
-    sub_llm_chars = max_chunk_chars
-
     return f"""You are tasked with answering a query with associated context. You can access, transform, and analyze this context interactively in a REPL environment that can recursively query sub-LLMs, which you are strongly encouraged to use as much as possible. You will be queried iteratively until you provide a final answer.
 
 Your context is a text string with {context_length} total characters.
 
 The REPL environment is initialized with:
 1. A 'context' variable that contains extremely important information about your query. You should check the content of the 'context' variable to understand what you are working with. Make sure you look through it sufficiently as you answer your query.
-2. A 'llm_query' function that allows you to query an LLM (that can handle around {sub_llm_chars:,} chars) inside your REPL environment.
+2. A 'llm_query' function that allows you to query an LLM (that can handle around 500K chars) inside your REPL environment.
 3. The ability to use 'print()' statements to view the output of your REPL code and continue your reasoning.
 4. A 'MAX_CHUNK_CHARS' variable ({max_chunk_chars:,}) indicating the maximum characters per sub-LLM call.
 
-CRITICAL: You will only be able to see very short truncated outputs (first ~200 chars) from the REPL environment. You CANNOT read the context through print() — the output will be truncated. You MUST use the llm_query() function to analyze chunks of context. This is the only way to understand the content semantically.
+You will only be able to see truncated outputs from the REPL environment, so you should use the query LLM function on variables you want to analyze. You will find this function especially useful when you have to analyze the semantics of the context. Use these variables as buffers to build up your final answer.
 
 Use these variables as buffers to build up your final answer.
 

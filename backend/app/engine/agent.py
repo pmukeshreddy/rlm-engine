@@ -35,10 +35,10 @@ def _max_chunk_chars_for_model(model: str) -> int:
 # a short prefix and length". Keep this small to force the model to
 # rely on llm_query() for semantic analysis rather than reading raw
 # context through print() output.
-STDOUT_TRUNCATE_CHARS = 500
+STDOUT_TRUNCATE_CHARS = 20000
 
 # Max iterations of the RLM loop
-MAX_RLM_ITERATIONS = 10
+MAX_RLM_ITERATIONS = 30
 
 
 @dataclass
@@ -396,28 +396,32 @@ class LettaAgent:
 
                 conversation_history.append({"role": "user", "content": feedback})
 
-            # Exhausted iterations — try to salvage an answer from REPL env
-            fallback_answer = None
-            for var_name in ['final_answer', 'answer', 'result', 'response', 'summary', 'output']:
-                val = repl._env.get(var_name)
-                if val and isinstance(val, str) and len(val.strip()) > 5:
-                    fallback_answer = val.strip()
-                    break
+            # Exhausted iterations — ask the LLM to provide a final answer
+            # from the full conversation history (matching reference _default_answer)
+            default_prompt = conversation_history + [{
+                "role": "user",
+                "content": "You have run out of iterations. Based on everything you have learned, please provide a final answer to the original query now. Be concise and direct.",
+            }]
+            try:
+                default_response = await self.llm_client.rlm_iteration(
+                    conversation_history=default_prompt,
+                    system_prompt=system_prompt,
+                    model=self.config.model,
+                )
+                self._current_trace.total_input_tokens += default_response.input_tokens
+                self._current_trace.total_output_tokens += default_response.output_tokens
+                self._current_trace.total_cost_usd += default_response.cost_usd
+                default_answer = default_response.content.strip()
+                if default_answer:
+                    _make_result(self._current_trace, repl, all_code_blocks,
+                                 success=True, final_result=default_answer)
+                    return self._current_trace
+            except Exception:
+                pass
 
-            # Also check if any llm_query results were captured in stdout
-            if not fallback_answer and repl._output_log:
-                for log_entry in reversed(repl._output_log):
-                    if log_entry.startswith("[print] ") and len(log_entry) > 30:
-                        fallback_answer = log_entry[8:].strip()
-                        break
-
-            if fallback_answer:
-                _make_result(self._current_trace, repl, all_code_blocks,
-                             success=True, final_result=fallback_answer)
-            else:
-                _make_result(self._current_trace, repl, all_code_blocks,
-                             success=False,
-                             error=f"RLM loop exhausted {self.config.max_iterations} iterations without calling FINAL")
+            _make_result(self._current_trace, repl, all_code_blocks,
+                         success=False,
+                         error=f"RLM loop exhausted {self.config.max_iterations} iterations without calling FINAL")
             return self._current_trace
 
         except Exception as e:
