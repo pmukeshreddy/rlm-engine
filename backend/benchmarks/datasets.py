@@ -161,36 +161,49 @@ def load_scrolls_qmsum(n_samples: int = 20, split: str = "validation") -> List[B
 
 def load_oolong(
     n_samples: int = 50,
-    split: str = "trec_coarse",
+    variant: str = "synth",
 ) -> List[BenchmarkSample]:
     """
     Load OOLONG — long reasoning and aggregation benchmark.
 
     Paper: "Oolong: Evaluating long context reasoning and aggregation
            capabilities" (Bertsch et al., 2025)
-    Source: https://huggingface.co/datasets/PurpleAlex/oolong
+    Source: https://huggingface.co/datasets/oolongbench/oolong-synth
+            https://huggingface.co/datasets/oolongbench/oolong-real
 
-    Each sample has a long context of labeled entries and a query requiring
-    semantic classification and aggregation across the full input.
+    Variants:
+      synth - Synthetic tasks with controllable complexity (default)
+      real  - Real D&D transcript reasoning tasks
     """
-    ds = load_dataset("PurpleAlex/oolong", split, trust_remote_code=True)
+    if variant == "real":
+        ds = load_dataset("oolongbench/oolong-real", "dnd", split="validation")
+    else:
+        ds = load_dataset("oolongbench/oolong-synth", split="validation")
+
     ds = ds.shuffle(seed=42).select(range(min(n_samples, len(ds))))
 
     samples = []
     for i, row in enumerate(ds):
-        context = row.get("input", row.get("context", ""))
+        context = row.get("context_window_text", "")
         if not context or len(context) < 500:
             continue
 
-        answer = str(row.get("output", row.get("answer", "")))
+        answer = str(row.get("answer", ""))
+        question = row.get("question", "Answer based on the context.")
+
+        metadata = {"variant": variant}
+        if "answer_type" in row:
+            metadata["answer_type"] = row["answer_type"]
+        if "task" in row:
+            metadata["task"] = row["task"]
 
         samples.append(BenchmarkSample(
-            id=f"oolong_{split}_{i}",
+            id=f"oolong_{variant}_{i}",
             context=context,
-            question=row.get("query", row.get("question", "Answer based on the context.")),
+            question=question,
             reference_answers=[answer],
-            dataset=f"oolong/{split}",
-            metadata={"split": split},
+            dataset=f"oolong/{variant}",
+            metadata=metadata,
         ))
 
     return samples

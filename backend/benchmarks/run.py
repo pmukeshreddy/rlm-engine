@@ -359,12 +359,20 @@ examples:
         default="narrativeqa",
         help="Sub-task for LongBench (default: narrativeqa)",
     )
+    parser.add_argument(
+        "--variant",
+        default="synth",
+        choices=["synth", "real"],
+        help="OOLONG variant: synth (default) or real (D&D transcripts)",
+    )
 
     args = parser.parse_args()
 
     kwargs = {}
     if args.dataset == "longbench":
         kwargs["task"] = args.task
+    if args.dataset == "oolong":
+        kwargs["variant"] = args.variant
 
     asyncio.run(run_benchmark(
         dataset_name=args.dataset,
