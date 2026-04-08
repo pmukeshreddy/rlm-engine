@@ -331,7 +331,7 @@ class LettaAgent:
                         code=llm_output, timeout=self.config.execution_timeout,
                     )
                     # if state[Final] is set then return state[Final]
-                    if step_result.final_set:
+                    if step_result.final_set and step_result.final_value and step_result.final_value.strip():
                         _make_result(self._current_trace, repl, all_code_blocks,
                                      success=True, final_result=step_result.final_value)
                         self._current_trace.iterations.append({
@@ -339,6 +339,10 @@ class LettaAgent:
                             "child_calls": step_result.child_calls_this_step,
                         })
                         return self._current_trace
+                    elif step_result.final_set:
+                        # FINAL was called with empty value — reset and keep going
+                        repl._final_set = False
+                        repl._final_result = None
 
                 # Check for FINAL/FINAL_VAR in text (outside code blocks)
                 text_final = _extract_final_from_text(llm_output)
