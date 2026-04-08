@@ -176,7 +176,7 @@ def load_oolong(
       real  - Real D&D transcript reasoning tasks
     """
     if variant == "real":
-        ds = load_dataset("oolongbench/oolong-real", "dnd", split="validation")
+        ds = load_dataset("oolongbench/oolong-real", "toy_dnd", split="validation")
     else:
         ds = load_dataset("oolongbench/oolong-synth", split="validation")
 
