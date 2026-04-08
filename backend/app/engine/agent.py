@@ -377,15 +377,28 @@ class LettaAgent:
                 if text_final:
                     if text_final.startswith("__VAR__"):
                         var_name = text_final[7:]
-                        final_value = str(repl._env.get(var_name, f"(var '{var_name}' not found)"))
+                        val = repl._env.get(var_name)
+                        if val is None:
+                            # Variable not found — don't return error as answer, keep iterating
+                            pass
+                        else:
+                            final_value = str(val)
+                            if final_value.strip():
+                                _make_result(self._current_trace, repl, all_code_blocks,
+                                             success=True, final_result=final_value)
+                                self._current_trace.iterations.append({
+                                    "iteration": iteration + 1, "type": "text_final",
+                                })
+                                return self._current_trace
                     else:
                         final_value = text_final
-                    _make_result(self._current_trace, repl, all_code_blocks,
-                                 success=True, final_result=final_value)
-                    self._current_trace.iterations.append({
-                        "iteration": iteration + 1, "type": "text_final",
-                    })
-                    return self._current_trace
+                        if final_value.strip():
+                            _make_result(self._current_trace, repl, all_code_blocks,
+                                         success=True, final_result=final_value)
+                            self._current_trace.iterations.append({
+                                "iteration": iteration + 1, "type": "text_final",
+                            })
+                            return self._current_trace
 
                 # hist <- hist || code || Metadata(stdout)
                 self._current_trace.iterations.append({
