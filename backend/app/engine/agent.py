@@ -178,15 +178,29 @@ class LettaAgent:
         self._child_sequence = 0
         self._current_depth = 0
 
-    def _hash_context(self, context: str) -> str:
-        return hashlib.sha256(context.encode()).hexdigest()
+    def _hash_context(self, context) -> str:
+        if isinstance(context, list):
+            combined = "".join(context)
+        else:
+            combined = context
+        return hashlib.sha256(combined.encode()).hexdigest()
 
-    def _get_context_info(self, context: str) -> Dict[str, Any]:
+    def _context_total_chars(self, context) -> int:
+        if isinstance(context, list):
+            return sum(len(c) for c in context)
+        return len(context)
+
+    def _get_context_info(self, context) -> Dict[str, Any]:
+        total = self._context_total_chars(context)
+        if isinstance(context, list):
+            preview = context[0][:200] + "..." if context and len(context[0]) > 200 else str(context[:2])
+        else:
+            preview = context[:200] + "..." if len(context) > 200 else context
         return {
-            "size": len(context),
+            "size": total,
             "hash": self._hash_context(context),
-            "type": "text",
-            "preview": context[:200] + "..." if len(context) > 200 else context,
+            "type": "List[str]" if isinstance(context, list) else "string",
+            "preview": preview,
         }
 
     async def _child_agent_query(self, prompt: str, memory: Dict[str, Any]) -> LLMResponse:
@@ -266,9 +280,10 @@ class LettaAgent:
         root_node_id = str(uuid4())
         memory = memory or {}
 
+        context_chars = self._context_total_chars(context)
         self._current_trace = ExecutionTrace(
             execution_id=execution_id, root_node_id=root_node_id,
-            user_query=user_query, context_size=len(context),
+            user_query=user_query, context_size=context_chars,
             context_hash=self._hash_context(context),
             generated_code="", started_at=datetime.utcnow(),
         )
@@ -278,7 +293,7 @@ class LettaAgent:
         if self.on_node_update:
             self.on_node_update({"type": "execution_start", "data": {
                 "execution_id": execution_id, "root_node_id": root_node_id,
-                "user_query": user_query, "context_size": len(context),
+                "user_query": user_query, "context_size": context_chars,
             }})
 
         try:
