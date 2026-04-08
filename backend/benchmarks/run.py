@@ -150,6 +150,7 @@ async def run_benchmark(
     dataset_name: str,
     n_samples: int,
     model: str,
+    sub_model: str = None,
     output_path: str = None,
     **dataset_kwargs,
 ):
@@ -158,11 +159,13 @@ async def run_benchmark(
     samples = load_benchmark(dataset_name, n_samples=n_samples, **dataset_kwargs)
     print(f"  Loaded {len(samples)} samples")
     print(f"  Avg context size: {sum(len(s.context) for s in samples) // len(samples):,} chars")
+    if sub_model:
+        print(f"  Sub-call model: {sub_model}")
     print()
 
     # Initialize
     llm_client = LLMClient()
-    agent = RecursiveLettaAgent(llm_client=llm_client, config=AgentConfig(model=model))
+    agent = RecursiveLettaAgent(llm_client=llm_client, config=AgentConfig(model=model, sub_model=sub_model))
     baseline = DirectLLMBaseline(llm_client=llm_client)
     evaluator = MetricsEvaluator(llm_client=llm_client)
 
@@ -346,6 +349,11 @@ examples:
         help="Path to save full results JSON",
     )
     parser.add_argument(
+        "--sub-model",
+        default=None,
+        help="Model for sub-calls (default: same as --model). Paper uses cheaper model for sub-calls.",
+    )
+    parser.add_argument(
         "--task",
         default="narrativeqa",
         help="Sub-task for LongBench (default: narrativeqa)",
@@ -361,6 +369,7 @@ examples:
         dataset_name=args.dataset,
         n_samples=args.samples,
         model=args.model,
+        sub_model=args.sub_model,
         output_path=args.output,
         **kwargs,
     ))

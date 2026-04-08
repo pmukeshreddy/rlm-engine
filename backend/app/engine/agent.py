@@ -35,7 +35,7 @@ def _max_chunk_chars_for_model(model: str) -> int:
 # a short prefix and length". Keep this small to force the model to
 # rely on llm_query() for semantic analysis rather than reading raw
 # context through print() output.
-STDOUT_TRUNCATE_CHARS = 500
+STDOUT_TRUNCATE_CHARS = 1500
 
 # Max iterations of the RLM loop
 MAX_RLM_ITERATIONS = 30
@@ -45,6 +45,7 @@ MAX_RLM_ITERATIONS = 30
 class AgentConfig:
     """Configuration for a Letta agent."""
     model: str = settings.default_model
+    sub_model: Optional[str] = None  # Model for sub-calls; defaults to model if None
     max_chunk_size: int = settings.default_chunk_size
     max_recursion_depth: int = settings.max_recursion_depth
     execution_timeout: int = settings.execution_timeout
@@ -191,10 +192,11 @@ class LettaAgent:
     async def _child_agent_query(self, prompt: str, memory: Dict[str, Any]) -> LLMResponse:
         """Execute a child agent query (called via llm_query in the REPL)."""
         self._child_sequence += 1
+        sub_model = self.config.sub_model or self.config.model
         response = await self.llm_client.child_agent_query(
             prompt=prompt,
             parent_memory=memory,
-            model=self.config.model,
+            model=sub_model,
         )
 
         child_trace = {

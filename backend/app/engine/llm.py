@@ -85,9 +85,16 @@ def _get_rlm_system_prompt(context_length: int, max_chunk_chars: int, model: str
     """
     Build the RLM system prompt — faithful to Appendix C (1a) from the paper.
     """
+    # Compute chunk lengths metadata (paper: "broken up into chunks of char lengths")
+    n_chunks = max(1, (context_length + max_chunk_chars - 1) // max_chunk_chars)
+    chunk_lengths = [max_chunk_chars] * (n_chunks - 1)
+    if context_length > 0:
+        chunk_lengths.append(context_length - max_chunk_chars * (n_chunks - 1))
+    chunk_lengths_str = str(chunk_lengths) if n_chunks <= 20 else str(chunk_lengths[:20]) + f"... [{n_chunks - 20} others]"
+
     return f"""You are tasked with answering a query with associated context. You can access, transform, and analyze this context interactively in a REPL environment that can recursively query sub-LLMs, which you are strongly encouraged to use as much as possible. You will be queried iteratively until you provide a final answer.
 
-Your context is a string with {context_length} total characters.
+Your context is a string with {context_length} total characters, and is broken up into chunks of char lengths: {chunk_lengths_str}.
 
 The REPL environment is initialized with:
 1. A 'context' variable that contains extremely important information about your query. You should check the content of the 'context' variable to understand what you are working with. Make sure you look through it sufficiently as you answer your query.
