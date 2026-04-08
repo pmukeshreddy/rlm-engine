@@ -356,7 +356,7 @@ Generate Python code. Call FINAL(result) at the end."""
         """
         model = model or settings.default_model
 
-        system_prompt = """You are a helpful assistant that answers questions about provided text. Give short, direct answers in 1-2 sentences. If the text doesn't contain relevant information, say so briefly."""
+        system_prompt = """Answer questions about the provided text. Be extremely concise — ideally under 15 words. Give ONLY the factual answer, no explanation or preamble. If the text doesn't contain relevant information, say "Not found in this section." """
 
         user_message = prompt
 

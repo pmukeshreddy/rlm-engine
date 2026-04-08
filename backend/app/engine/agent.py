@@ -144,6 +144,30 @@ def _extract_final_from_text(text: str) -> Optional[str]:
     return None
 
 
+async def _distill_answer(llm_client, answer: str, query: str, model: str) -> str:
+    """Distill a verbose answer down to a concise 5-15 word response."""
+    if not answer or len(answer.split()) <= 15:
+        return answer
+    response = await llm_client.complete(
+        messages=[{
+            "role": "user",
+            "content": (
+                f"Compress this answer to under 15 words. Keep ONLY the key facts. "
+                f"No preamble, no explanation.\n\n"
+                f"Question: {query}\n"
+                f"Verbose answer: {answer}\n\n"
+                f"Concise answer:"
+            ),
+        }],
+        model=model,
+        system_prompt="You compress answers to be as short as possible (5-15 words). Output ONLY the compressed answer.",
+        temperature=0.0,
+        max_tokens=64,
+    )
+    distilled = response.content.strip().strip('"\'')
+    return distilled if distilled else answer
+
+
 def _make_result(trace, repl, all_code_blocks, success, final_result=None, error=None):
     """Helper to build ExecutionResult and finalize trace."""
     trace.generated_code = "\n\n".join(all_code_blocks)
@@ -332,8 +356,10 @@ class LettaAgent:
                     )
                     # if state[Final] is set then return state[Final]
                     if step_result.final_set:
+                        distilled = await _distill_answer(
+                            self.llm_client, step_result.final_value, user_query, self.config.model)
                         _make_result(self._current_trace, repl, all_code_blocks,
-                                     success=True, final_result=step_result.final_value)
+                                     success=True, final_result=distilled)
                         self._current_trace.iterations.append({
                             "iteration": iteration + 1, "final_set": True,
                             "child_calls": step_result.child_calls_this_step,
@@ -348,8 +374,10 @@ class LettaAgent:
                         final_value = str(repl._env.get(var_name, f"(var '{var_name}' not found)"))
                     else:
                         final_value = text_final
+                    distilled = await _distill_answer(
+                        self.llm_client, final_value, user_query, self.config.model)
                     _make_result(self._current_trace, repl, all_code_blocks,
-                                 success=True, final_result=final_value)
+                                 success=True, final_result=distilled)
                     self._current_trace.iterations.append({
                         "iteration": iteration + 1, "type": "text_final",
                     })
@@ -408,6 +436,8 @@ class LettaAgent:
                         break
 
             if fallback_answer:
+                fallback_answer = await _distill_answer(
+                    self.llm_client, fallback_answer, user_query, self.config.model)
                 _make_result(self._current_trace, repl, all_code_blocks,
                              success=True, final_result=fallback_answer)
             else:
