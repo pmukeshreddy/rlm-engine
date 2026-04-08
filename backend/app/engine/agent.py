@@ -372,15 +372,48 @@ class LettaAgent:
                     else:
                         feedback = f"REPL Output ({len(step_result.stdout)} chars):\n{truncated_stdout}"
                 else:
-                    feedback = "Please write code in ```repl blocks to explore the context."
+                    feedback = (
+                        "You did not write any executable code. You MUST write code in ```repl blocks.\n"
+                        "Example:\n```repl\nchunk = context[:MAX_CHUNK_CHARS]\n"
+                        "answer = llm_query(f\"Answer this question: {user_query}\\n\\nText: {chunk}\")\n"
+                        "FINAL(answer)\n```"
+                    )
 
-                feedback += "\n\nContinue. Call FINAL(answer) when you have your answer."
+                # Escalating urgency as iterations run out
+                remaining = self.config.max_iterations - iteration - 1
+                if remaining <= 0:
+                    feedback += "\n\nFINAL WARNING: This is your LAST iteration. You MUST call FINAL(answer) RIGHT NOW with your best answer. If you have any partial findings, call FINAL with those."
+                elif remaining <= 2:
+                    feedback += f"\n\nCRITICAL: Only {remaining} iteration(s) left! You MUST call FINAL(answer) NOW. Use what you have gathered so far. Do NOT start new analysis — just call FINAL(your_best_answer)."
+                elif remaining <= 4:
+                    feedback += f"\n\nWARNING: {remaining} iterations remaining. Wrap up your analysis and call FINAL(answer) soon."
+                else:
+                    feedback += "\n\nContinue. Call FINAL(answer) when you have your answer."
+
                 conversation_history.append({"role": "user", "content": feedback})
 
-            # Exhausted iterations — fail
-            _make_result(self._current_trace, repl, all_code_blocks,
-                         success=False,
-                         error=f"RLM loop exhausted {self.config.max_iterations} iterations without calling FINAL")
+            # Exhausted iterations — try to salvage an answer from REPL env
+            fallback_answer = None
+            for var_name in ['final_answer', 'answer', 'result', 'response', 'summary', 'output']:
+                val = repl._env.get(var_name)
+                if val and isinstance(val, str) and len(val.strip()) > 5:
+                    fallback_answer = val.strip()
+                    break
+
+            # Also check if any llm_query results were captured in stdout
+            if not fallback_answer and repl._output_log:
+                for log_entry in reversed(repl._output_log):
+                    if log_entry.startswith("[print] ") and len(log_entry) > 30:
+                        fallback_answer = log_entry[8:].strip()
+                        break
+
+            if fallback_answer:
+                _make_result(self._current_trace, repl, all_code_blocks,
+                             success=True, final_result=fallback_answer)
+            else:
+                _make_result(self._current_trace, repl, all_code_blocks,
+                             success=False,
+                             error=f"RLM loop exhausted {self.config.max_iterations} iterations without calling FINAL")
             return self._current_trace
 
         except Exception as e:
