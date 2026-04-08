@@ -93,6 +93,14 @@ class DirectLLMBaseline:
         context_for_prompt, truncated = self._truncate_context(context, model)
         context_tokens = count_tokens(context_for_prompt, model)
 
+        truncation_note = ""
+        if truncated:
+            truncation_note = (
+                "\n\nNOTE: The context above was truncated to fit the model's context window. "
+                "You may be missing parts of the original document. If the answer is not in the "
+                "provided context, say \"Insufficient context\" rather than guessing."
+            )
+
         start = time.perf_counter()
         response = await self.llm_client.complete(
             messages=[{
@@ -102,10 +110,11 @@ class DirectLLMBaseline:
                     f"Context:\n{context_for_prompt}\n\n"
                     f"Question: {question}\n\n"
                     f"Answer in 1-2 short sentences maximum. Give ONLY the answer, no explanation or preamble."
+                    f"{truncation_note}"
                 ),
             }],
             model=model,
-            system_prompt="You answer questions based on provided context. Give short, direct answers — ideally under 20 words. Never repeat the question or add unnecessary context.",
+            system_prompt="You answer questions based on provided context. Give short, direct answers — ideally under 20 words. Never repeat the question or add unnecessary context. If the context appears truncated and the answer is not present, say \"Insufficient context.\"",
             temperature=0.3,
             max_tokens=1024,
         )
