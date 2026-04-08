@@ -284,11 +284,22 @@ class LettaAgent:
         try:
             max_chunk_chars = _max_chunk_chars_for_model(self.config.model)
 
+            # Determine context type and length for prompt metadata
+            if isinstance(context, list):
+                context_type = "List[str]"
+                context_total_length = sum(len(c) for c in context)
+                context_desc = f"{len(context)} chunks, {context_total_length:,} total chars"
+            else:
+                context_type = "string"
+                context_total_length = len(context)
+                context_desc = f"{context_total_length:,} chars"
+
             # System prompt (paper's Appendix C)
             system_prompt = _get_rlm_system_prompt(
-                context_length=len(context),
+                context_length=context_total_length,
                 max_chunk_chars=max_chunk_chars,
                 model=self.config.model,
+                context_type=context_type,
             )
 
             # Initialize persistent REPL
@@ -303,7 +314,7 @@ class LettaAgent:
             # hist <- [Metadata(state)]
             conversation_history = [{
                 "role": "user",
-                "content": f"Query: {user_query}\n\nThe context ({len(context):,} chars) is loaded in the REPL as the variable `context`. Use the REPL to explore and answer the query.",
+                "content": f"Query: {user_query}\n\nThe context ({context_desc}) is loaded in the REPL as the variable `context`. Use the REPL to explore and answer the query.",
             }]
 
             all_code_blocks = []

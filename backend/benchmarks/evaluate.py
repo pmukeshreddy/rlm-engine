@@ -111,7 +111,28 @@ def answer_length_ratio(prediction: str, reference_answers: List[str]) -> float:
     return pred_len / avg_ref_len
 
 
-def score_prediction(prediction: str, reference_answers: List[str]) -> dict:
+def oolong_score(prediction: str, reference: str) -> float:
+    """
+    OOLONG scoring from the paper:
+    - Numeric answers: score(y_hat) = 0.75^|y - y_hat|
+    - Other answers: exact match after normalization
+    """
+    pred_norm = normalize_text(prediction)
+    ref_norm = normalize_text(reference)
+
+    # Try numeric scoring
+    try:
+        pred_num = float(pred_norm)
+        ref_num = float(ref_norm)
+        return 0.75 ** abs(ref_num - pred_num)
+    except (ValueError, TypeError):
+        pass
+
+    # Exact match for non-numeric
+    return 1.0 if pred_norm == ref_norm else 0.0
+
+
+def score_prediction(prediction: str, reference_answers: List[str], dataset: str = "") -> dict:
     """
     Score a prediction against one or more reference answers.
 
@@ -144,10 +165,20 @@ def score_prediction(prediction: str, reference_answers: List[str]) -> dict:
 
     length_ratio = answer_length_ratio(prediction, reference_answers)
 
-    return {
+    result = {
         "f1": round(best_f1, 4),
         "exact_match": round(best_em, 4),
         **{k: round(v, 4) for k, v in best_rouge.items()},
         "bertscore": round(best_bertscore, 4),
         "length_ratio": round(length_ratio, 2),
     }
+
+    # Add OOLONG-specific scoring when applicable
+    if dataset and "oolong" in dataset:
+        best_oolong = max(
+            (oolong_score(prediction, ref) for ref in reference_answers if ref),
+            default=0.0,
+        )
+        result["oolong_score"] = round(best_oolong, 4)
+
+    return result

@@ -214,7 +214,7 @@ async def run_benchmark(
             ref_words = len(sample.reference_answers[0].split()) if sample.reference_answers else 0
             print(f"    [RLM ANS] ({rlm_words}w vs ref {ref_words}w): {rlm_answer[:200]}{'...' if len(rlm_answer) > 200 else ''}")
 
-            rlm_scores = score_prediction(rlm_answer, sample.reference_answers)
+            rlm_scores = score_prediction(rlm_answer, sample.reference_answers, dataset=sample.dataset)
             print(f"    [RLM SCORES] f1={rlm_scores['f1']:.4f} bertscore={rlm_scores['bertscore']:.4f} len_ratio={rlm_scores['length_ratio']:.1f}")
 
             comp_result = None
@@ -240,7 +240,7 @@ async def run_benchmark(
 
         except Exception as e:
             print(f"    [ERROR] RLM failed: {e}")
-            result["rlm"] = {"answer": "", "scores": score_prediction("", sample.reference_answers),
+            result["rlm"] = {"answer": "", "scores": score_prediction("", sample.reference_answers, dataset=sample.dataset),
                              "total_tokens": 0, "cost_usd": 0, "latency_ms": 0, "child_calls": 0,
                              "compression_ratio": 0, "success": False, "error": str(e)}
 
@@ -253,7 +253,7 @@ async def run_benchmark(
                 model=model,
             )
 
-            direct_scores = score_prediction(baseline_result.answer, sample.reference_answers)
+            direct_scores = score_prediction(baseline_result.answer, sample.reference_answers, dataset=sample.dataset)
 
             # Debug: show Direct answer
             direct_words = len(baseline_result.answer.split()) if baseline_result.answer else 0
@@ -272,7 +272,7 @@ async def run_benchmark(
 
         except Exception as e:
             print(f"    [ERROR] Direct failed: {e}")
-            result["direct"] = {"answer": "", "scores": score_prediction("", sample.reference_answers),
+            result["direct"] = {"answer": "", "scores": score_prediction("", sample.reference_answers, dataset=sample.dataset),
                                 "total_tokens": 0, "cost_usd": 0, "latency_ms": 0, "truncated": False,
                                 "error": str(e)}
 
@@ -318,11 +318,12 @@ datasets:
   quality         Multiple-choice long-document QA (Pang et al., 2022)
   longbench       Comprehensive long-context benchmark (Bai et al., 2023)
   scrolls_qmsum   Query-based meeting summarization (Shaham et al., 2022)
+  oolong          Long reasoning and aggregation (Bertsch et al., 2025) [PAPER]
 
 examples:
+  python -m benchmarks.run --dataset oolong --samples 10 --model gpt-5-mini
   python -m benchmarks.run --dataset narrativeqa --samples 10
-  python -m benchmarks.run --dataset quality --samples 20 --model gpt-4o
-  python -m benchmarks.run --dataset longbench --samples 15 --output results.json
+  python -m benchmarks.run --dataset narrativeqa --samples 5 --model gpt-5-mini --sub-model gpt-4.1-nano
         """,
     )
 

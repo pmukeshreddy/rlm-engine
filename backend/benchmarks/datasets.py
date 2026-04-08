@@ -159,11 +159,49 @@ def load_scrolls_qmsum(n_samples: int = 20, split: str = "validation") -> List[B
     return samples
 
 
+def load_oolong(
+    n_samples: int = 50,
+    split: str = "trec_coarse",
+) -> List[BenchmarkSample]:
+    """
+    Load OOLONG — long reasoning and aggregation benchmark.
+
+    Paper: "Oolong: Evaluating long context reasoning and aggregation
+           capabilities" (Bertsch et al., 2025)
+    Source: https://huggingface.co/datasets/PurpleAlex/oolong
+
+    Each sample has a long context of labeled entries and a query requiring
+    semantic classification and aggregation across the full input.
+    """
+    ds = load_dataset("PurpleAlex/oolong", split, trust_remote_code=True)
+    ds = ds.shuffle(seed=42).select(range(min(n_samples, len(ds))))
+
+    samples = []
+    for i, row in enumerate(ds):
+        context = row.get("input", row.get("context", ""))
+        if not context or len(context) < 500:
+            continue
+
+        answer = str(row.get("output", row.get("answer", "")))
+
+        samples.append(BenchmarkSample(
+            id=f"oolong_{split}_{i}",
+            context=context,
+            question=row.get("query", row.get("question", "Answer based on the context.")),
+            reference_answers=[answer],
+            dataset=f"oolong/{split}",
+            metadata={"split": split},
+        ))
+
+    return samples
+
+
 DATASET_REGISTRY = {
     "narrativeqa": load_narrativeqa,
     "quality": load_quality,
     "longbench": load_longbench,
     "scrolls_qmsum": load_scrolls_qmsum,
+    "oolong": load_oolong,
 }
 
 

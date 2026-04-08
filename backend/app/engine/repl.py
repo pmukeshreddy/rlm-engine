@@ -66,7 +66,7 @@ class REPLExecutor:
 
     def __init__(
         self,
-        context: str,
+        context: Any,  # str or List[str]
         memory: Dict[str, Any],
         llm_query_fn: Callable[[str], Any],
         on_child_call: Optional[Callable[[ChildCall], None]] = None,

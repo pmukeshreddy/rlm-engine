@@ -81,7 +81,7 @@ def count_tokens(text: str, model: str = "gpt-4") -> int:
     return len(encoding.encode(text))
 
 
-def _get_rlm_system_prompt(context_length: int, max_chunk_chars: int, model: str) -> str:
+def _get_rlm_system_prompt(context_length: int, max_chunk_chars: int, model: str, context_type: str = "string") -> str:
     """
     Build the RLM system prompt — faithful to Appendix C (1a) from the paper.
     """
@@ -94,7 +94,7 @@ def _get_rlm_system_prompt(context_length: int, max_chunk_chars: int, model: str
 
     return f"""You are tasked with answering a query with associated context. You can access, transform, and analyze this context interactively in a REPL environment that can recursively query sub-LLMs, which you are strongly encouraged to use as much as possible. You will be queried iteratively until you provide a final answer.
 
-Your context is a string with {context_length} total characters, and is broken up into chunks of char lengths: {chunk_lengths_str}.
+Your context is a {context_type} with {context_length} total characters, and is broken up into chunks of char lengths: {chunk_lengths_str}.
 
 The REPL environment is initialized with:
 1. A 'context' variable that contains extremely important information about your query. You should check the content of the 'context' variable to understand what you are working with. Make sure you look through it sufficiently as you answer your query.
@@ -130,17 +130,24 @@ for i, chunk in enumerate(chunks):
     buffers.append(buffer)
 ```
 
-As another example, when the context isn't that long, a simple but viable strategy is to split into chunks and recursively query an LLM over each chunk:
+As another example, when the context isn't that long (e.g. >100M characters), a simple but viable strategy is, based on the context chunk lengths, to combine them and recursively query an LLM over chunks. For example, if the context is a List[str], we ask the same query over each chunk:
 ```repl
 query = "How many jobs did the main character have?"
-chunk_size = MAX_CHUNK_CHARS - 500
-chunks = [context[i:i+chunk_size] for i in range(0, len(context), chunk_size)]
+# Suppose our context is ~1M chars, and we want each sub-LLM query to be ~0.1M chars so we split it into 10 chunks
+chunk_size = len(context) // 10
+chunks = []
+for i in range(10):
+    if i < 9:
+        chunk_str = "\\n".join(context[i*chunk_size:(i+1)*chunk_size])
+    else:
+        chunk_str = "\\n".join(context[i*chunk_size:])
+    chunks.append(chunk_str)
 answers = []
 for i, chunk in enumerate(chunks):
-    answer = llm_query(f"Try to answer the following query: {{query}}. Here is the text:\\n{{chunk}}. Only answer if you are confident in your answer based on the evidence.")
+    answer = llm_query(f"Try to answer the following query: {{query}}. Here are the documents:\\n{{chunk}}. Only answer if you are confident in your answer based on the evidence.")
     answers.append(answer)
     print(f"I got the answer from chunk {{i}}: {{answer}}")
-final_answer = llm_query(f"Aggregating all the answers per chunk, answer the original query: {{query}}\\n\\nAnswers:\\n" + "\\n".join(answers))
+final_answer = llm_query(f"Aggregating all the answers per chunk, answer the original query about total number of jobs: {{query}}\\n\\nAnswers:\\n" + "\\n".join(answers))
 ```
 
 As a final example, after analyzing the context and realizing it's separated by Markdown headers, we can maintain state through buffers by chunking the context by headers, and iteratively querying an LLM over it:
