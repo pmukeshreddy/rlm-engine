@@ -391,8 +391,13 @@ class LettaAgent:
                                 })
                                 return self._current_trace
                     else:
+                        # If it looks like a variable name (single word, no spaces),
+                        # check REPL env first — model often writes FINAL(answer)
+                        # meaning the variable, not the literal word
                         final_value = text_final
-                        if final_value.strip():
+                        if re.match(r'^\w+$', final_value) and final_value in repl._env:
+                            final_value = str(repl._env[final_value])
+                        if final_value.strip() and final_value.strip() not in ('answer', 'result', 'final_answer', 'output'):
                             _make_result(self._current_trace, repl, all_code_blocks,
                                          success=True, final_result=final_value)
                             self._current_trace.iterations.append({
