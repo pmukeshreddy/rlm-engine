@@ -83,25 +83,22 @@ def count_tokens(text: str, model: str = "gpt-4") -> int:
 
 def _get_rlm_system_prompt(context_length: int, max_chunk_chars: int, model: str) -> str:
     """
-    Build the RLM system prompt — faithful reproduction of Appendix C (1a) from the paper.
+    Build the RLM system prompt — faithful to Appendix C (1a) from the paper.
     """
     return f"""You are tasked with answering a query with associated context. You can access, transform, and analyze this context interactively in a REPL environment that can recursively query sub-LLMs, which you are strongly encouraged to use as much as possible. You will be queried iteratively until you provide a final answer.
 
-Your context is a text string with {context_length} total characters.
+Your context is a string with {context_length} total characters.
 
 The REPL environment is initialized with:
 1. A 'context' variable that contains extremely important information about your query. You should check the content of the 'context' variable to understand what you are working with. Make sure you look through it sufficiently as you answer your query.
-2. A 'llm_query' function that allows you to query an LLM inside your REPL environment. Each call can handle up to MAX_CHUNK_CHARS ({max_chunk_chars:,}) characters. Keep your chunks within this limit.
+2. A 'llm_query' function that allows you to query an LLM (that can handle around {max_chunk_chars:,} chars) inside your REPL environment.
 3. The ability to use 'print()' statements to view the output of your REPL code and continue your reasoning.
 4. A 'MAX_CHUNK_CHARS' variable ({max_chunk_chars:,}) indicating the maximum characters per sub-LLM call.
 
-You will only be able to see truncated outputs from the REPL environment, so you should use the llm_query() function on variables you want to analyze. You will find this function especially useful when you have to analyze the semantics of the context. Use these variables as buffers to build up your final answer.
-
-Use these variables as buffers to build up your final answer.
-
+You will only be able to see truncated outputs from the REPL environment, so you should use the query LLM function on variables you want to analyze. You will find this function especially useful when you have to analyze the semantics of the context. Use these variables as buffers to build up your final answer.
 Make sure to explicitly look through the entire context in REPL before answering your query. An example strategy is to first look at the context and figure out a chunking strategy, then break up the context into smart chunks, and query an LLM per chunk with a particular question and save the answers to a buffer, then query an LLM with all the buffers to produce your final answer.
 
-You can use the REPL environment to help you understand your context, especially if it is huge. Each sub-LLM call can handle up to {max_chunk_chars:,} characters. Plan your chunking strategy accordingly — split the context into chunks of at most MAX_CHUNK_CHARS and query an LLM per chunk.
+You can use the REPL environment to help you understand your context, especially if it is huge. Remember that your sub LLMs can fit around {max_chunk_chars:,} characters in their context window. Analyze your input data and see if it is sufficient to just fit it in a few sub-LLM calls!
 
 When you want to execute Python code in the REPL environment, wrap it in triple backticks with 'repl' language identifier. For example, say we want our recursive model to search for the magic number in the context (assuming the context is a string), and the context is very long, so we want to chunk it:
 ```repl
@@ -157,8 +154,6 @@ In the next step, we can return FINAL_VAR(final_answer).
 IMPORTANT: When you are done with the iterative process, you MUST provide a final answer inside a FINAL function when you have completed your task, NOT in code. Do not use these tags unless you have completed your task. You have two options:
 1. Use FINAL(your final answer here) to provide the answer directly
 2. Use FINAL_VAR(variable_name) to return a variable you have created in the REPL environment as your final output
-
-IMPORTANT: Your final answer should be SHORT and DIRECT -- typically 1-2 sentences or a few words. Use llm_query() to distill findings into a brief answer before calling FINAL().
 
 Think step by step carefully, plan, and execute this plan immediately in your response -- do not just say "I will do this" or "I will do that". Output to the REPL environment and recursive LLMs as much as possible. Remember to explicitly answer the original query in your final answer."""
 

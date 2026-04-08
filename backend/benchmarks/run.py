@@ -19,7 +19,7 @@ from typing import List, Dict, Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.engine.agent import LettaAgent, AgentConfig
+from app.engine.agent import RecursiveLettaAgent, AgentConfig
 from app.engine.llm import LLMClient
 from app.engine.metrics import MetricsEvaluator
 
@@ -162,7 +162,7 @@ async def run_benchmark(
 
     # Initialize
     llm_client = LLMClient()
-    agent = LettaAgent(llm_client=llm_client, config=AgentConfig(model=model))
+    agent = RecursiveLettaAgent(llm_client=llm_client, config=AgentConfig(model=model))
     baseline = DirectLLMBaseline(llm_client=llm_client)
     evaluator = MetricsEvaluator(llm_client=llm_client)
 
@@ -188,7 +188,7 @@ async def run_benchmark(
         try:
             start = time.perf_counter()
             trace = await agent.run(
-                user_query=f"{sample.question}\n\nIMPORTANT: Give a short, direct answer in 1-2 sentences max.",
+                user_query=sample.question,
                 context=sample.context,
                 memory={},
             )
